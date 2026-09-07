@@ -69,7 +69,6 @@ def get_stock_metrics(symbol):
     support_level = min(lows[-20:])
     resistance_level = max(highs[-20:])
 
-    # التقييم البرمجي المحدد لمنع أخطاء الذكاء الاصطناعي
     if rsi < 30:
         rsi_description = f"{rsi} (منطقة ذروة بيع صريحة Oversold لأن القيمة أدنى من 30)"
     elif rsi > 70:
@@ -79,7 +78,6 @@ def get_stock_metrics(symbol):
 
     trend_description = "اتجاه صعودي (السعر أعلى من EMA20)" if close_price >= ema20 else "اتجاه هابط (السعر أسفل EMA20)"
 
-    # وضع الوقف أسفل الدعم بنسبة 2% لضمان عدم التفعيل المبكر
     stop_loss_calculated = round(support_level * 0.98, 2)
     if stop_loss_calculated >= close_price:
         stop_loss_calculated = round(close_price * 0.95, 2)
@@ -103,7 +101,7 @@ def get_stock_metrics(symbol):
 
 def ask_ai_decision(symbol, metrics):
     prompt = f"""
-أنت محلل مالي محترف. المعطيات التالية جرى تقييمها وتدقيقها حسابياً ببرمجية بايثون:
+أنت محلل مالي محترف. المعطيات التالية جرى تقييمها وتدقيقها حسابياً ببرمجية بايثون وفق معايير TradingView وInvestopedia:
 - السهم: {symbol}
 - السعر الحالي: ${metrics['close']}
 - حالة RSI: {metrics['rsi_description']}
@@ -111,18 +109,18 @@ def ask_ai_decision(symbol, metrics):
 - حجم التداول: {metrics['volume']:,} (المتوسط لـ20 يوم: {metrics['avg_volume']:,})
 - مستوى الدعم (أدنى 20 يوم): ${metrics['support']}
 - مستوى المقاومة (أعلى 20 يوم): ${metrics['resistance']}
-- مستوى وقف الخسارة المحسوب برمجياً أسفل الدعم: ${metrics['stop_loss']}
-- هدف جني الأرباح المحسوب برمجياً (نسبة 1:2): ${metrics['take_profit']}
+- مستوى وقف الخسارة (أسفل الدعم بنسبة 2%): ${metrics['stop_loss']}
+- هدف جني الأرباح (نسبة المخاطرة للعائد 1:2): ${metrics['take_profit']}
 
 قواعد الصياغة والتحليل:
-1. اعتمد التقييم المذكور لحالة RSI والاتجاه العام كما هو دون تغيير.
-2. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد، ويُمنع استخدام كلمة 'سعودي'.
-3. يكون القرار BUY فقط إذا كان السعر عند مستوى الدعم مع وجود حجم تداول مرتفع وتأكيد ارتداد، وغير ذلك يكون القرار HOLD.
+1. اعتمد التقييم المحسوب لحالة RSI والاتجاه العام كما هو دون أي تعديل.
+2. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد وتجنب الأخطاء الإملائية.
+3. القرار يكون BUY فقط إذا كان السعر قريباً من الدعم مع وجود حجم تداول مرتفع وتأكيد ارتداد، وغير ذلك يكون القرار HOLD.
 
 أرجع الإجابة بصيغة JSON فقط:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "تفسير دقيق باللغة العربية يربط السعر بالحجم ومستوى الدعم والاتجاه"
+  "reason": "تفسير دقيق باللغة العربية المباشرة يربط السعر بالحجم ومستوى الدعم والاتجاه"
 }}
 """
     headers = {
@@ -181,7 +179,7 @@ def run_hybrid_bot(symbol):
         )
         order = trading_client.submit_order(order_data=order_data)
         send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
-        
+
 symbols = ["AMIX", "ADXN"]
 for symbol in symbols:
     run_hybrid_bot(symbol)
