@@ -21,6 +21,9 @@ def send_telegram_msg(message):
     except Exception as e:
         print("Telegram Error:", e)
 
+@app.route('/', methods=['GET'])
+def home():
+    return "Webhook Server is Live and Running!"
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
     data = request.json
