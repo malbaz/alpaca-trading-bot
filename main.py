@@ -120,14 +120,16 @@ def get_stock_metrics(symbol):
         ema50_str = f"${ema50}"
     else:
         ema50 = None
-        ema50_str = "غير متوفر (البيانات أقل من 50 يوماً)"
+        ema50_str = "غير متوفر"
     
     atr = calculate_atr(highs, lows, closes)
     current_volume = int(round(volumes[-1]))
     avg_volume = int(round(sum(volumes[-20:]) / min(len(volumes), 20)))
     
+    volume_spike_valid = current_volume >= int(avg_volume * 1.20)
+    
     support_level = min(lows[-20:])
-    resistance_level = max(highs[-20:])
+    local_resistance = max(highs[-10:])
 
     pattern = detect_candlestick_pattern(opens, highs, lows, closes)
 
@@ -148,14 +150,16 @@ def get_stock_metrics(symbol):
         stop_loss_calculated = round(close_price - (1.5 * atr), 2)
 
     risk = close_price - stop_loss_calculated
-    take_profit_calculated = round(close_price + (2.0 * risk), 2)
+    target_default = round(close_price + (2.0 * risk), 2)
     
-    risk_reward_valid = True
-    if resistance_level > close_price and resistance_level < take_profit_calculated:
-        potential_reward = resistance_level - close_price
-        if risk > 0 and (potential_reward / risk) < 1.5:
-            risk_reward_valid = False
-        take_profit_calculated = resistance_level
+    if local_resistance > close_price:
+        take_profit_calculated = min(local_resistance, target_default)
+    else:
+        take_profit_calculated = target_default
+
+    potential_reward = take_profit_calculated - close_price
+    rr_ratio = round(potential_reward / risk, 2) if risk > 0 else 0.0
+    risk_reward_valid = rr_ratio >= 1.5
 
     return {
         "close": close_price,
@@ -167,11 +171,13 @@ def get_stock_metrics(symbol):
         "trend_description": trend_description,
         "volume": current_volume,
         "avg_volume": avg_volume,
+        "volume_spike_valid": volume_spike_valid,
         "support": support_level,
-        "resistance": resistance_level,
+        "local_resistance": local_resistance,
         "pattern": pattern,
         "stop_loss": stop_loss_calculated,
         "take_profit": take_profit_calculated,
+        "rr_ratio": rr_ratio,
         "risk_reward_valid": risk_reward_valid
     }
 
@@ -185,21 +191,22 @@ def ask_ai_decision(symbol, metrics, market_trend):
 - حالة RSI: {metrics['rsi_description']}
 - الاتجاه العام: {metrics['trend_description']} (EMA20: ${metrics['ema20']}, EMA50: {metrics['ema50_str']})
 - حجم التداول: {metrics['volume']:,} (المتوسط لـ20 يوم: {metrics['avg_volume']:,})
-- مستوى الدعم: ${metrics['support']} | المقاومة: ${metrics['resistance']}
+- زيادة حجم التداول فوق المتوسط بنسبة 20%+: {metrics['volume_spike_valid']}
+- مستوى الدعم: ${metrics['support']} | المقاومة المحلية (10 أيام): ${metrics['local_resistance']}
 - نموذج الشموع اليابانية: {metrics['pattern']}
-- جدوى نسبة المخاطرة للعائد (R:R >= 1.5): {metrics['risk_reward_valid']}
+- نسبة المخاطرة للعائد (R:R): {metrics['rr_ratio']} (مقبولة >= 1.5: {metrics['risk_reward_valid']})
 - وقف الخسارة الديناميكي المحسوب بـ ATR: ${metrics['stop_loss']}
 - هدف جني الأرباح المحسوب: ${metrics['take_profit']}
 
 قواعد التحليل:
-1. القرار يكون BUY فقط إذا كان اتجاه السوق أو السهم صعودياً، والسعر قريباً من الدعم، وتظهر شمعة إيجابية أو انعكاسية، وكانت جدوى المخاطرة للعائد مقبولة (True).
-2. إذا كانت جدوى المخاطرة للعائد غير مقبولة (False)، أو كان السعر في اتجاه هابط صريح أسفل EMA50 والشمعة غير انعكاسية، اجعل القرار HOLD.
+1. القرار يكون BUY فقط إذا كان اتجاه السوق أو السهم صعودياً، وزيادة حجم التداول مقبولة (True)، وتظهر شمعة إيجابية أو انعكاسية، وكانت نسبة المخاطرة للعائد مقبولة (True).
+2. إذا كانت السيولة غير كافية (volume_spike_valid = False)، أو نسبة المخاطرة للعائد غير مقبولة (False)، أو الاتجاه هابط، اجعل القرار HOLD.
 3. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد.
 
 أرجع الإجابة بصيغة JSON فقط:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "تفسير دقيق يربط اتجاه السوق والسهم ونموذج الشمعة وحجم التداول ونسبة المخاطرة للعائد"
+  "reason": "تفسير دقيق يربط الحجم المتزايد والمقاومة المحلية ونسبة المخاطرة للعائد بالقرار"
 }}
 """
     headers = {
@@ -232,7 +239,7 @@ def run_hybrid_bot(symbol, market_trend):
     ai_decision = ask_ai_decision(symbol, metrics, market_trend)
     is_buy = ai_decision.get("action") == "BUY"
     action_ar = "شراء (BUY)" if is_buy else "انتظار (HOLD)"
-    vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "طبيعي أو منخفض 📉"
+    vol_status = "ارتفاع قوي (+20%) 📈" if metrics['volume_spike_valid'] else "طبيعي أو منخفض 📉"
 
     status_note = "" if is_buy else " (افتراضي عند التفعيل)"
 
@@ -245,8 +252,9 @@ def run_hybrid_bot(symbol, market_trend):
         f"📏 <b>مؤشر ATR:</b> {metrics['atr']}\n"
         f"📊 <b>RSI:</b> {metrics['rsi_description']}\n"
         f"📉 <b>الاتجاه:</b> {metrics['trend_description']}\n"
-        f"🛡️ <b>الدعم:</b> ${metrics['support']} | 🧗 <b>المقاومة:</b> ${metrics['resistance']}\n"
+        f"🛡️ <b>الدعم:</b> ${metrics['support']} | 🧗 <b>المقاومة المحلية:</b> ${metrics['local_resistance']}\n"
         f"📦 <b>الحجم:</b> {metrics['volume']:,} ({vol_status})\n"
+        f"⚖️ <b>نسبة العائد/المخاطرة:</b> 1:{metrics['rr_ratio']}\n"
         f"🎯 <b>الهدف المقترح:</b> ${metrics['take_profit']}{status_note} | 🛑 <b>الوقف (ATR):</b> ${metrics['stop_loss']}{status_note}\n\n"
         f"🎯 <b>القرار:</b> <code>{action_ar}</code>\n"
         f"💡 <b>السبب الفني:</b> {ai_decision.get('reason')}"
