@@ -19,6 +19,12 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
 
+# بيانات الأسهم المملوكة على (عوائد / سهم)
+MANUAL_POSITIONS = {
+    "AMIX": {"qty": 427, "avg_price": 13.86},
+    "ADXN": {"qty": 863, "avg_price": 8.85}
+}
+
 def send_telegram_msg(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -33,6 +39,45 @@ def get_date_range(days_back=120):
     today = datetime.now().date()
     start_date = today - timedelta(days=days_back)
     return start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
+
+def get_owned_position(symbol, current_price):
+    try:
+        pos = trading_client.get_open_position(symbol)
+        qty = float(pos.qty)
+        avg_price = float(pos.avg_entry_price)
+        unrealized_pl = float(pos.unrealized_pl)
+        unrealized_plpc = float(pos.unrealized_plpc) * 100
+        return {
+            "is_owned": True,
+            "source": "Alpaca",
+            "qty": qty,
+            "avg_price": round(avg_price, 2),
+            "unrealized_pl": round(unrealized_pl, 2),
+            "unrealized_plpc": round(unrealized_plpc, 2)
+        }
+    except Exception:
+        if symbol in MANUAL_POSITIONS and MANUAL_POSITIONS[symbol]["qty"] > 0:
+            m_pos = MANUAL_POSITIONS[symbol]
+            qty = m_pos["qty"]
+            avg_price = m_pos["avg_price"]
+            unrealized_pl = round((current_price - avg_price) * qty, 2)
+            unrealized_plpc = round(((current_price - avg_price) / avg_price) * 100, 2) if avg_price > 0 else 0.0
+            return {
+                "is_owned": True,
+                "source": "يدوي (عوائد/سهم)",
+                "qty": qty,
+                "avg_price": round(avg_price, 2),
+                "unrealized_pl": unrealized_pl,
+                "unrealized_plpc": unrealized_plpc
+            }
+        return {
+            "is_owned": False,
+            "source": "لا يوجد",
+            "qty": 0,
+            "avg_price": 0.0,
+            "unrealized_pl": 0.0,
+            "unrealized_plpc": 0.0
+        }
 
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
@@ -125,12 +170,10 @@ def get_stock_metrics(symbol):
     atr = calculate_atr(highs, lows, closes)
     current_volume = int(round(volumes[-1]))
     avg_volume = int(round(sum(volumes[-20:]) / min(len(volumes), 20)))
-    
     volume_spike_valid = current_volume >= int(avg_volume * 1.20)
     
     support_level = min(lows[-20:])
     local_resistance = max(highs[-10:])
-
     pattern = detect_candlestick_pattern(opens, highs, lows, closes)
 
     if rsi < 30:
@@ -161,6 +204,8 @@ def get_stock_metrics(symbol):
     rr_ratio = round(potential_reward / risk, 2) if risk > 0 else 0.0
     risk_reward_valid = rr_ratio >= 1.5
 
+    pos_info = get_owned_position(symbol, close_price)
+
     return {
         "close": close_price,
         "rsi": rsi,
@@ -178,35 +223,40 @@ def get_stock_metrics(symbol):
         "stop_loss": stop_loss_calculated,
         "take_profit": take_profit_calculated,
         "rr_ratio": rr_ratio,
-        "risk_reward_valid": risk_reward_valid
+        "risk_reward_valid": risk_reward_valid,
+        "pos_info": pos_info
     }
 
 def ask_ai_decision(symbol, metrics, market_trend):
+    pos = metrics["pos_info"]
+    pos_summary = f"نعم - المصدر: {pos['source']} ({pos['qty']} سهم بسعر تكلفة ${pos['avg_price']} | الربح/الخسارة: {pos['unrealized_plpc']}% / ${pos['unrealized_pl']})" if pos["is_owned"] else "لا (لا يوجد أسهم مملوكة)"
+
     prompt = f"""
 أنت محلل مالي. البيانات التالية جرى حسابها ببرمجية بايثون:
 - اتجاه السوق العام (SPY): {market_trend}
 - السهم: {symbol}
 - السعر الحالي: ${metrics['close']}
+- ملكية السهم الحالية: {pos_summary}
 - مؤشر ATR: {metrics['atr']}
 - حالة RSI: {metrics['rsi_description']}
 - الاتجاه العام: {metrics['trend_description']} (EMA20: ${metrics['ema20']}, EMA50: {metrics['ema50_str']})
 - حجم التداول: {metrics['volume']:,} (المتوسط لـ20 يوم: {metrics['avg_volume']:,})
 - زيادة حجم التداول فوق المتوسط بنسبة 20%+: {metrics['volume_spike_valid']}
-- مستوى الدعم: ${metrics['support']} | المقاومة المحلية (10 أيام): ${metrics['local_resistance']}
+- مستوى الدعم: ${metrics['support']} | المقاومة المحلية: ${metrics['local_resistance']}
 - نموذج الشموع اليابانية: {metrics['pattern']}
 - نسبة المخاطرة للعائد (R:R): {metrics['rr_ratio']} (مقبولة >= 1.5: {metrics['risk_reward_valid']})
 - وقف الخسارة الديناميكي المحسوب بـ ATR: ${metrics['stop_loss']}
 - هدف جني الأرباح المحسوب: ${metrics['take_profit']}
 
-قواعد التحليل:
-1. القرار يكون BUY فقط إذا كان اتجاه السوق أو السهم صعودياً، وزيادة حجم التداول مقبولة (True)، وتظهر شمعة إيجابية أو انعكاسية، وكانت نسبة المخاطرة للعائد مقبولة (True).
-2. إذا كانت السيولة غير كافية (volume_spike_valid = False)، أو نسبة المخاطرة للعائد غير مقبولة (False)، أو الاتجاه هابط، اجعل القرار HOLD.
-3. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد.
+قواعد التحليل والقرارات المتاحة (BUY / SELL / HOLD):
+1. إذا كان السهم مملوكاً مع ربح جيد ووصل للمقاومة أو ظهرت شمعة هابطة، نوصي بـ SELL.
+2. إذا كان السهم غير مملوك والظروف الفنية صعودية مع حجم مرتفع ونسبة مخاطرة مقبولة، اجعل القرار BUY.
+3. إذا كانت المعطيات غير مكتملة أو حركة محايدة، اجعل القرار HOLD.
 
 أرجع الإجابة بصيغة JSON فقط:
 {{
-  "action": "BUY" or "HOLD",
-  "reason": "تفسير دقيق يربط الحجم المتزايد والمقاومة المحلية ونسبة المخاطرة للعائد بالقرار"
+  "action": "BUY" or "SELL" or "HOLD",
+  "reason": "تفسير دقيق يربط موقف المحفظة الحالي بالحركة السعرية والمؤشرات الفنية"
 }}
 """
     headers = {
@@ -237,17 +287,25 @@ def run_hybrid_bot(symbol, market_trend):
         return
 
     ai_decision = ask_ai_decision(symbol, metrics, market_trend)
-    is_buy = ai_decision.get("action") == "BUY"
-    action_ar = "شراء (BUY)" if is_buy else "انتظار (HOLD)"
-    vol_status = "ارتفاع قوي (+20%) 📈" if metrics['volume_spike_valid'] else "طبيعي أو منخفض 📉"
+    action = ai_decision.get("action", "HOLD")
+    
+    if action == "BUY":
+        action_ar = "شراء (BUY)"
+    elif action == "SELL":
+        action_ar = "بيع / جني أرباح (SELL)"
+    else:
+        action_ar = "انتظار (HOLD)"
 
-    status_note = "" if is_buy else " (افتراضي عند التفعيل)"
+    vol_status = "ارتفاع قوي (+20%) 📈" if metrics['volume_spike_valid'] else "طبيعي أو منخفض 📉"
+    pos = metrics["pos_info"]
+    pos_str = f"{pos['qty']} سهم | التكلفة: ${pos['avg_price']} | الربح/الخسارة: {pos['unrealized_plpc']}% ({pos['source']})" if pos['is_owned'] else "غير مملوك"
 
     msg = (
-        f"🤖 <b>تنبيه التحليل الفني المطور</b>\n\n"
+        f"🤖 <b>تنبيه التحليل الفني وموقف المحفظة</b>\n\n"
         f"🌐 <b>اتجاه السوق (SPY):</b> {market_trend}\n"
         f"📈 <b>السهم:</b> {symbol}\n"
         f"💵 <b>السعر الحالي:</b> ${metrics['close']}\n"
+        f"💼 <b>الملكية الحالية:</b> {pos_str}\n"
         f"🕯️ <b>نموذج الشمعة:</b> {metrics['pattern']}\n"
         f"📏 <b>مؤشر ATR:</b> {metrics['atr']}\n"
         f"📊 <b>RSI:</b> {metrics['rsi_description']}\n"
@@ -255,13 +313,13 @@ def run_hybrid_bot(symbol, market_trend):
         f"🛡️ <b>الدعم:</b> ${metrics['support']} | 🧗 <b>المقاومة المحلية:</b> ${metrics['local_resistance']}\n"
         f"📦 <b>الحجم:</b> {metrics['volume']:,} ({vol_status})\n"
         f"⚖️ <b>نسبة العائد/المخاطرة:</b> 1:{metrics['rr_ratio']}\n"
-        f"🎯 <b>الهدف المقترح:</b> ${metrics['take_profit']}{status_note} | 🛑 <b>الوقف (ATR):</b> ${metrics['stop_loss']}{status_note}\n\n"
+        f"🎯 <b>الهدف المقترح:</b> ${metrics['take_profit']} | 🛑 <b>الوقف (ATR):</b> ${metrics['stop_loss']}\n\n"
         f"🎯 <b>القرار:</b> <code>{action_ar}</code>\n"
-        f"💡 <b>السبب الفني:</b> {ai_decision.get('reason')}"
+        f"💡 <b>السبب الفني والمحفظي:</b> {ai_decision.get('reason')}"
     )
     send_telegram_msg(msg)
 
-    if is_buy:
+    if action == "BUY" and not pos['is_owned']:
         order_data = MarketOrderRequest(
             symbol=symbol,
             qty=1,
@@ -271,7 +329,19 @@ def run_hybrid_bot(symbol, market_trend):
             stop_loss=StopLossRequest(stop_price=metrics['stop_loss'])
         )
         order = trading_client.submit_order(order_data=order_data)
-        send_telegram_msg(f"✅ <b>تم تنفيذ أمر الشراء للسهم {symbol}</b>\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
+        send_telegram_msg(f"✅ <b>تم تنفيذ أمر الشراء الافتراضي للسهم {symbol}</b>\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
+    elif action == "SELL" and pos['is_owned']:
+        if pos['source'] == "Alpaca":
+            order_data = MarketOrderRequest(
+                symbol=symbol,
+                qty=pos['qty'],
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC
+            )
+            trading_client.submit_order(order_data=order_data)
+            send_telegram_msg(f"🚨 <b>تم تنفيذ أمر البيع تلقائياً على Alpaca للسهم {symbol}</b>")
+        else:
+            send_telegram_msg(f"⚠️ <b>توصية بيع يدوية:</b> يرجى تنفيذ أمر البيع يدوياً على تطبيق (عوائد / سهم) للكمية: {pos['qty']} سهم.")
 
 market_trend = get_market_trend()
 symbols = ["AMIX", "ADXN"]
