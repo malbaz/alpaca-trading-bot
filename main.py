@@ -46,55 +46,72 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return round(100 - (100 / (1 + rs)), 2)
 
+def calculate_atr(highs, lows, closes, period=14):
+    if len(closes) < period + 1:
+        return 0.5
+    tr_list = []
+    for i in range(1, len(closes)):
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+        tr_list.append(tr)
+    return round(sum(tr_list[-period:]) / period, 2)
+
 def get_stock_metrics(symbol):
-    url_hist = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2026-01-01/2026-12-31?adjusted=true&sort=desc&limit=30&apiKey={POLYGON_API_KEY}"
+    url_hist = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2026-01-01/2026-12-31?adjusted=true&sort=desc&limit=60&apiKey={POLYGON_API_KEY}"
     res_hist = requests.get(url_hist).json()
     
     results = res_hist.get("results", [])
-    if not results or len(results) < 5:
+    if not results or len(results) < 20:
         return None
 
-    closes = [item["c"] for item in reversed(results)]
-    volumes = [item["v"] for item in reversed(results)]
-    lows = [item["l"] for item in reversed(results)]
-    highs = [item["h"] for item in reversed(results)]
+    results_sorted = list(reversed(results))
+    closes = [item["c"] for item in results_sorted]
+    volumes = [item["v"] for item in results_sorted]
+    lows = [item["l"] for item in results_sorted]
+    highs = [item["h"] for item in results_sorted]
 
     close_price = closes[-1]
     rsi = calculate_rsi(closes)
     ema20 = round(sum(closes[-20:]) / min(len(closes), 20), 2)
+    ema50 = round(sum(closes[-50:]) / min(len(closes), 50), 2) if len(closes) >= 50 else ema20
     
+    atr = calculate_atr(highs, lows, closes)
     current_volume = int(round(volumes[-1]))
     avg_volume = int(round(sum(volumes[-20:]) / min(len(volumes), 20)))
     
     support_level = min(lows[-20:])
     resistance_level = max(highs[-20:])
 
+    is_bullish_candle = closes[-1] > closes[-2]
+
     if rsi < 30:
-        rsi_description = f"{rsi} (منطقة ذروة بيع صريحة Oversold لأن القيمة أدنى من 30)"
+        rsi_description = f"{rsi} (منطقة ذروة بيع صريحة أدنى من 30)"
     elif rsi > 70:
-        rsi_description = f"{rsi} (منطقة ذروة شراء صريحة Overbought لأن القيمة أعلى من 70)"
+        rsi_description = f"{rsi} (منطقة ذروة شراء صريحة أعلى من 70)"
     else:
-        rsi_description = f"{rsi} (منطقة محايدة بين 30 و70)"
+        rsi_description = f"{rsi} (منطقة محايدة)"
 
-    trend_description = "اتجاه صعودي (السعر أعلى من EMA20)" if close_price >= ema20 else "اتجاه هابط (السعر أسفل EMA20)"
+    trend_description = "صعودي على المتوسطات (أعلى من EMA20 و EMA50)" if close_price >= ema20 and close_price >= ema50 else "هابط أو غير مستقر"
 
-    stop_loss_calculated = round(support_level * 0.98, 2)
+    stop_loss_calculated = round(support_level - (1.2 * atr), 2)
     if stop_loss_calculated >= close_price:
-        stop_loss_calculated = round(close_price * 0.95, 2)
+        stop_loss_calculated = round(close_price - (1.5 * atr), 2)
 
     risk = close_price - stop_loss_calculated
-    take_profit_calculated = round(close_price + (risk * 2), 2)
+    take_profit_calculated = round(close_price + (2.0 * risk), 2)
 
     return {
         "close": close_price,
         "rsi": rsi,
         "rsi_description": rsi_description,
         "ema20": ema20,
+        "ema50": ema50,
+        "atr": atr,
         "trend_description": trend_description,
         "volume": current_volume,
         "avg_volume": avg_volume,
         "support": support_level,
         "resistance": resistance_level,
+        "is_bullish_candle": is_bullish_candle,
         "stop_loss": stop_loss_calculated,
         "take_profit": take_profit_calculated
     }
@@ -104,23 +121,24 @@ def ask_ai_decision(symbol, metrics):
 أنت محلل مالي. البيانات التالية جرى حسابها ببرمجية بايثون:
 - السهم: {symbol}
 - السعر الحالي: ${metrics['close']}
+- مؤشر ATR: {metrics['atr']}
 - حالة RSI: {metrics['rsi_description']}
-- الاتجاه العام: {metrics['trend_description']} (المتوسط EMA20: ${metrics['ema20']})
+- الاتجاه العام: {metrics['trend_description']} (EMA20: ${metrics['ema20']}, EMA50: ${metrics['ema50']})
 - حجم التداول: {metrics['volume']:,} (المتوسط لـ20 يوم: {metrics['avg_volume']:,})
-- مستوى الدعم (أدنى 20 يوم): ${metrics['support']}
-- مستوى المقاومة (أعلى 20 يوم): ${metrics['resistance']}
-- مستوى وقف الخسارة (أسفل الدعم بنسبة 2%): ${metrics['stop_loss']}
-- هدف جني الأرباح (نسبة المخاطرة للعائد 1:2): ${metrics['take_profit']}
+- مستوى الدعم: ${metrics['support']} | المقاومة: ${metrics['resistance']}
+- شمعة صاعدة إيجابية: {metrics['is_bullish_candle']}
+- وقف الخسارة المحسوب بـ ATR أسفل الدعم: ${metrics['stop_loss']}
+- الهدف المحسوب (نسبة 1:2): ${metrics['take_profit']}
 
-القواعد:
-1. اعتمد التقييم المحسوب لحالة RSI والاتجاه العام كما هو دون أي تعديل.
-2. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد وتجنب كلمة 'سعودي'.
-3. القرار يكون BUY فقط إذا كان السعر قريباً من الدعم مع حجم تداول مرتفع وتأكيد ارتداد، وإلا يكون القرار HOLD.
+قواعد التحليل:
+1. القرار يكون BUY فقط إذا كان السعر قريباً من الدعم، والشمعة الحالية إيجابية (True)، والاتجاه العام صعودي أو محايد قادم من ارتداد مع حجم تداول مناسب.
+2. إذا كان السعر في اتجاه هابط صريح أسفل EMA50 والشمعة هابطة، اجعل القرار HOLD.
+3. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد.
 
 أرجع الإجابة بصيغة JSON فقط:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "تفسير دقيق باللغة العربية المباشرة يربط السعر بالحجم ومستوى الدعم والاتجاه"
+  "reason": "تفسير دقيق يربط السعر والاتجاه وحجم التداول ومؤشر ATR"
 }}
 """
     headers = {
@@ -152,17 +170,18 @@ def run_hybrid_bot(symbol):
 
     ai_decision = ask_ai_decision(symbol, metrics)
     action_ar = "شراء (BUY)" if ai_decision.get("action") == "BUY" else "انتظار (HOLD)"
-    vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "منخفض/طبيعي 📉"
+    vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "طبيعي أو منخفض 📉"
 
     msg = (
         f"🤖 *تنبيه التحليل الفني المطور*\n\n"
         f"📈 *السهم:* {symbol}\n"
         f"💵 *السعر الحالي:* ${metrics['close']}\n"
+        f"📏 *مؤشر ATR:* {metrics['atr']}\n"
         f"📊 *RSI:* {metrics['rsi_description']}\n"
         f"📉 *الاتجاه:* {metrics['trend_description']}\n"
         f"🛡️ *الدعم:* ${metrics['support']} | 🧗 *المقاومة:* ${metrics['resistance']}\n"
-        f"📦 *الحجم:* {metrics['volume']:,} (الحالة: {vol_status})\n"
-        f"🎯 *الهدف (1:2):* ${metrics['take_profit']} | 🛑 *الوقف (أسفل الدعم):* ${metrics['stop_loss']}\n\n"
+        f"📦 *الحجم:* {metrics['volume']:,} ({vol_status})\n"
+        f"🎯 *الهدف المقترح:* ${metrics['take_profit']} | 🛑 *الوقف (ديناميكي ATR):* ${metrics['stop_loss']}\n\n"
         f"🎯 *القرار:* `{action_ar}`\n"
         f"💡 *السبب الفني:* {ai_decision.get('reason')}"
     )
