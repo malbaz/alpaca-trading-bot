@@ -69,37 +69,60 @@ def get_stock_metrics(symbol):
     support_level = min(lows[-20:])
     resistance_level = max(highs[-20:])
 
+    # التقييم البرمجي المحدد لمنع أخطاء الذكاء الاصطناعي
+    if rsi < 30:
+        rsi_description = f"{rsi} (منطقة ذروة بيع صريحة Oversold لأن القيمة أدنى من 30)"
+    elif rsi > 70:
+        rsi_description = f"{rsi} (منطقة ذروة شراء صريحة Overbought لأن القيمة أعلى من 70)"
+    else:
+        rsi_description = f"{rsi} (منطقة محايدة بين 30 و70)"
+
+    trend_description = "اتجاه صعودي (السعر أعلى من EMA20)" if close_price >= ema20 else "اتجاه هابط (السعر أسفل EMA20)"
+
+    # وضع الوقف أسفل الدعم بنسبة 2% لضمان عدم التفعيل المبكر
+    stop_loss_calculated = round(support_level * 0.98, 2)
+    if stop_loss_calculated >= close_price:
+        stop_loss_calculated = round(close_price * 0.95, 2)
+
+    risk = close_price - stop_loss_calculated
+    take_profit_calculated = round(close_price + (risk * 2), 2)
+
     return {
         "close": close_price,
         "rsi": rsi,
+        "rsi_description": rsi_description,
         "ema20": ema20,
+        "trend_description": trend_description,
         "volume": current_volume,
         "avg_volume": avg_volume,
         "support": support_level,
-        "resistance": resistance_level
+        "resistance": resistance_level,
+        "stop_loss": stop_loss_calculated,
+        "take_profit": take_profit_calculated
     }
 
 def ask_ai_decision(symbol, metrics):
     prompt = f"""
-أنت محلل مالي محترف. قم بتحليل سهم {symbol} بناءً على المعطيات التالية:
+أنت محلل مالي محترف. المعطيات التالية جرى تقييمها وتدقيقها حسابياً ببرمجية بايثون:
+- السهم: {symbol}
 - السعر الحالي: ${metrics['close']}
-- مؤشر القوة النسبية RSI (14): {metrics['rsi']}
-- المتوسط المتحرك EMA (20): ${metrics['ema20']}
-- حجم التداول الحالي: {metrics['volume']} (المتوسط لـ20 يوم: {metrics['avg_volume']})
+- حالة RSI: {metrics['rsi_description']}
+- الاتجاه العام: {metrics['trend_description']} (المتوسط EMA20: ${metrics['ema20']})
+- حجم التداول: {metrics['volume']:,} (المتوسط لـ20 يوم: {metrics['avg_volume']:,})
 - مستوى الدعم (أدنى 20 يوم): ${metrics['support']}
 - مستوى المقاومة (أعلى 20 يوم): ${metrics['resistance']}
+- مستوى وقف الخسارة المحسوب برمجياً أسفل الدعم: ${metrics['stop_loss']}
+- هدف جني الأرباح المحسوب برمجياً (نسبة 1:2): ${metrics['take_profit']}
 
-قواعد وقود تحليلية صارمة:
-1. قيمة RSI بين 30 و70 هي منطقة محايدة. يمنع وصف RSI بأنه ذروة بيع (Oversold) إلا إذا كانت القيمة أقل من 30 تماماً.
-2. يتطلب قرار الشراء (BUY) أن يكون السعر عند مستوى الدعم (${metrics['support']}) أو قريباً منه مع حجم تداول أعلى من المتوسط وتأكيد ارتداد.
-3. إذا كان الاتجاه هابطاً أسفل EMA20 بدون حجم تداول داعم، اجعل القرار (HOLD).
+قواعد الصياغة والتحليل:
+1. اعتمد التقييم المذكور لحالة RSI والاتجاه العام كما هو دون تغيير.
+2. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد، ويُمنع استخدام كلمة 'سعودي'.
+3. يكون القرار BUY فقط إذا كان السعر عند مستوى الدعم مع وجود حجم تداول مرتفع وتأكيد ارتداد، وغير ذلك يكون القرار HOLD.
 
-أرجع الإجابة بصيغة JSON فقط، واكتب 'reason' باللغة العربية المباشرة:
+أرجع الإجابة بصيغة JSON فقط:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "تفسير دقيق يربط السعر بالحجم ومستويات الدعم والاتجاه",
-  "stop_loss_price": {round(metrics['close'] * 0.98, 2)},
-  "take_profit_price": {round(metrics['close'] * 1.04, 2)}
+  "reason": "تفسير دقيق باللغة العربية يربط السعر بالحجم ومستوى الدعم والاتجاه"
 }}
 """
     headers = {
@@ -131,20 +154,17 @@ def run_hybrid_bot(symbol):
 
     ai_decision = ask_ai_decision(symbol, metrics)
     action_ar = "شراء (BUY)" if ai_decision.get("action") == "BUY" else "انتظار (HOLD)"
-
     vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "منخفض/طبيعي 📉"
-    
-    sl_price = ai_decision.get("stop_loss_price", round(metrics['close'] * 0.98, 2))
-    tp_price = ai_decision.get("take_profit_price", round(metrics['close'] * 1.04, 2))
 
     msg = (
         f"🤖 *تنبيه التحليل الفني المطور*\n\n"
         f"📈 *السهم:* {symbol}\n"
         f"💵 *السعر الحالي:* ${metrics['close']}\n"
-        f"📊 *RSI:* {metrics['rsi']} | *EMA20:* ${metrics['ema20']}\n"
+        f"📊 *RSI:* {metrics['rsi_description']}\n"
+        f"📈 *الاتجاه:* {metrics['trend_description']}\n"
         f"🛡️ *الدعم:* ${metrics['support']} | 🧗 *المقاومة:* ${metrics['resistance']}\n"
         f"📦 *الحجم:* {metrics['volume']:,} (الحالة: {vol_status})\n"
-        f"🎯 *الهدف المقترح:* ${tp_price} | 🛑 *الوقف المقترح:* ${sl_price}\n\n"
+        f"🎯 *الهدف (1:2):* ${metrics['take_profit']} | 🛑 *الوقف (أسفل الدعم):* ${metrics['stop_loss']}\n\n"
         f"🎯 *القرار:* `{action_ar}`\n"
         f"💡 *السبب الفني:* {ai_decision.get('reason')}"
     )
@@ -156,12 +176,12 @@ def run_hybrid_bot(symbol):
             qty=1,
             side=OrderSide.BUY,
             time_in_force=TimeInForce.GTC,
-            take_profit=TakeProfitRequest(limit_price=tp_price),
-            stop_loss=StopLossRequest(stop_price=sl_price)
+            take_profit=TakeProfitRequest(limit_price=metrics['take_profit']),
+            stop_loss=StopLossRequest(stop_price=metrics['stop_loss'])
         )
         order = trading_client.submit_order(order_data=order_data)
-        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${tp_price} | 🛑 الوقف: ${sl_price}")
-
+        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
+        
 symbols = ["AMIX", "ADXN"]
 for symbol in symbols:
     run_hybrid_bot(symbol)
