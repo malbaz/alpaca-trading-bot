@@ -145,4 +145,6 @@ def run_hybrid_bot(symbol):
     else:
         print("القرار: انتظار. لم يتم تقديم أي أمر شراء.")
 
-run_hybrid_bot("AAPL")
+symbols = ["AMIX", "ADXN"]
+for symbol in symbols:
+    run_hybrid_bot(symbol)
