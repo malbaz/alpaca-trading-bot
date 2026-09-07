@@ -73,10 +73,10 @@ Price: ${metrics['close']}
 RSI: {metrics['rsi']}
 EMA20: ${metrics['ema20']}
 
-Respond ONLY with a JSON object:
+Respond ONLY with a JSON object. Write the 'reason' value in clear Arabic:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "brief reason",
+  "reason": "سبب القرار باللغة العربية المباشرة والواضحة",
   "stop_loss_pct": 0.01,
   "take_profit_pct": 0.02
 }}
@@ -99,26 +99,28 @@ Respond ONLY with a JSON object:
             return json.loads(content)
         else:
             print("OpenAI Error Details:", response)
-            return {"action": "HOLD", "reason": "API Error"}
+            return {"action": "HOLD", "reason": "خطأ في الاتصال بالذكاء الاصطناعي"}
     except Exception as e:
         print("AI Processing Error:", e)
-        return {"action": "HOLD", "reason": "API Error"}
+        return {"action": "HOLD", "reason": "خطأ في المعالجة"}
 
 def run_hybrid_bot(symbol):
     metrics = get_stock_metrics(symbol)
     if not metrics:
-        print("Data retrieval failed.")
+        print("فشل في جلب البيانات.")
         return
 
     ai_decision = ask_ai_decision(symbol, metrics)
 
+    action_ar = "شراء" if ai_decision.get("action") == "BUY" else "الانتظار (HOLD)"
+
     msg = (
-        f"🤖 *Alpaca Hybrid Bot Alert*\n\n"
-        f"📈 *Stock:* {symbol}\n"
-        f"💵 *Price:* ${metrics['close']}\n"
-        f"📊 *RSI:* {metrics['rsi']} | *EMA20:* ${metrics['ema20']}\n\n"
-        f"🎯 *Decision:* `{ai_decision.get('action')}`\n"
-        f"💡 *Reason:* {ai_decision.get('reason')}"
+        f"🤖 *تنبيه بوت التداول*\n\n"
+        f"📈 *السهم:* {symbol}\n"
+        f"💵 *السعر الحالي:* ${metrics['close']}\n"
+        f"📊 *مؤشر RSI:* {metrics['rsi']} | *المتوسط المتحرك EMA20:* ${metrics['ema20']}\n\n"
+        f"🎯 *القرار:* `{action_ar}`\n"
+        f"💡 *السبب:* {ai_decision.get('reason')}"
     )
     send_telegram_msg(msg)
 
@@ -139,8 +141,8 @@ def run_hybrid_bot(symbol):
             stop_loss=StopLossRequest(stop_price=stop_loss)
         )
         order = trading_client.submit_order(order_data=order_data)
-        send_telegram_msg(f"✅ *Order Executed for {symbol}* | Order ID: `{order.id}`")
+        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}* | رقم الأمر: `{order.id}`")
     else:
-        print("Decision: HOLD. No order submitted.")
+        print("القرار: انتظار. لم يتم تقديم أي أمر شراء.")
 
 run_hybrid_bot("AAPL")
