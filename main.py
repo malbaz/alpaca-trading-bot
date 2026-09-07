@@ -152,19 +152,19 @@ def run_hybrid_bot(symbol):
 
     ai_decision = ask_ai_decision(symbol, metrics)
     action_ar = "شراء (BUY)" if ai_decision.get("action") == "BUY" else "انتظار (HOLD)"
-    vol_status = "مرتفع" if metrics['volume'] > metrics['avg_volume'] else "منخفض أو طبيعي"
+    vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "منخفض/طبيعي 📉"
 
     msg = (
-        f"تنبيه التحليل الفني\n\n"
-        f"السهم: {symbol}\n"
-        f"السعر الحالي: ${metrics['close']}\n"
-        f"RSI: {metrics['rsi_description']}\n"
-        f"الاتجاه: {metrics['trend_description']}\n"
-        f"الدعم: ${metrics['support']} | المقاومة: ${metrics['resistance']}\n"
-        f"الحجم: {metrics['volume']:,} (الحالة: {vol_status})\n"
-        f"الهدف (1:2): ${metrics['take_profit']} | الوقف (أسفل الدعم): ${metrics['stop_loss']}\n\n"
-        f"القرار: {action_ar}\n"
-        f"السبب الفني: {ai_decision.get('reason')}"
+        f"🤖 *تنبيه التحليل الفني المطور*\n\n"
+        f"📈 *السهم:* {symbol}\n"
+        f"💵 *السعر الحالي:* ${metrics['close']}\n"
+        f"📊 *RSI:* {metrics['rsi_description']}\n"
+        f"📉 *الاتجاه:* {metrics['trend_description']}\n"
+        f"🛡️ *الدعم:* ${metrics['support']} | 🧗 *المقاومة:* ${metrics['resistance']}\n"
+        f"📦 *الحجم:* {metrics['volume']:,} (الحالة: {vol_status})\n"
+        f"🎯 *الهدف (1:2):* ${metrics['take_profit']} | 🛑 *الوقف (أسفل الدعم):* ${metrics['stop_loss']}\n\n"
+        f"🎯 *القرار:* `{action_ar}`\n"
+        f"💡 *السبب الفني:* {ai_decision.get('reason')}"
     )
     send_telegram_msg(msg)
 
@@ -178,7 +178,7 @@ def run_hybrid_bot(symbol):
             stop_loss=StopLossRequest(stop_price=metrics['stop_loss'])
         )
         order = trading_client.submit_order(order_data=order_data)
-        send_telegram_msg(f"تم تنفيذ أمر الشراء للسهم {symbol}\nالهدف: ${metrics['take_profit']} | الوقف: ${metrics['stop_loss']}")
+        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
 
 symbols = ["AMIX", "ADXN"]
 for symbol in symbols:
