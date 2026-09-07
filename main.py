@@ -55,8 +55,43 @@ def calculate_atr(highs, lows, closes, period=14):
         tr_list.append(tr)
     return round(sum(tr_list[-period:]) / period, 2)
 
+def detect_candlestick_pattern(opens, highs, lows, closes):
+    if len(closes) < 2:
+        return "بيانات غير كافية"
+    o1, c1 = opens[-2], closes[-2]
+    o2, h2, l2, c2 = opens[-1], highs[-1], lows[-1], closes[-1]
+    
+    body = abs(c2 - o2)
+    candle_range = h2 - l2
+    
+    if o1 > c1 and c2 > o2 and o2 <= c1 and c2 >= o1:
+        return "شمعة ابتلاعية صاعدة (Bullish Engulfing)"
+    
+    if candle_range > 0 and (min(o2, c2) - l2) >= (2 * body) and (h2 - max(o2, c2)) <= (0.2 * candle_range):
+        return "شمعة مطرقة انعكاسية (Hammer)"
+    
+    if c2 > o2:
+        return "شمعة صاعدة عادية"
+    elif c2 < o2:
+        return "شمعة هابطة"
+    else:
+        return "شمعة دوجي محايدة"
+
+def get_market_trend():
+    url = f"https://api.polygon.io/v2/aggs/ticker/SPY/range/1/day/2026-01-01/2026-12-31?adjusted=true&sort=desc&limit=30&apiKey={POLYGON_API_KEY}"
+    try:
+        res = requests.get(url).json()
+        results = res.get("results", [])
+        if len(results) >= 20:
+            closes = [item["c"] for item in reversed(results)]
+            ema20 = sum(closes[-20:]) / 20
+            return "صعودي (SPY أعلى من EMA20)" if closes[-1] >= ema20 else "هابط (SPY أسفل EMA20)"
+    except Exception as e:
+        print("Market Trend Error:", e)
+    return "غير محدد"
+
 def get_stock_metrics(symbol):
-    url_hist = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2026-01-01/2026-12-31?adjusted=true&sort=desc&limit=60&apiKey={POLYGON_API_KEY}"
+    url_hist = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2026-01-01/2026-12-31?adjusted=true&sort=desc&limit=100&apiKey={POLYGON_API_KEY}"
     res_hist = requests.get(url_hist).json()
     
     results = res_hist.get("results", [])
@@ -64,6 +99,7 @@ def get_stock_metrics(symbol):
         return None
 
     results_sorted = list(reversed(results))
+    opens = [item["o"] for item in results_sorted]
     closes = [item["c"] for item in results_sorted]
     volumes = [item["v"] for item in results_sorted]
     lows = [item["l"] for item in results_sorted]
@@ -72,7 +108,13 @@ def get_stock_metrics(symbol):
     close_price = closes[-1]
     rsi = calculate_rsi(closes)
     ema20 = round(sum(closes[-20:]) / min(len(closes), 20), 2)
-    ema50 = round(sum(closes[-50:]) / min(len(closes), 50), 2) if len(closes) >= 50 else ema20
+    
+    if len(closes) >= 50:
+        ema50 = round(sum(closes[-50:]) / 50, 2)
+        ema50_str = f"${ema50}"
+    else:
+        ema50 = None
+        ema50_str = "غير متوفر (البيانات أقل من 50 يوماً)"
     
     atr = calculate_atr(highs, lows, closes)
     current_volume = int(round(volumes[-1]))
@@ -81,7 +123,7 @@ def get_stock_metrics(symbol):
     support_level = min(lows[-20:])
     resistance_level = max(highs[-20:])
 
-    is_bullish_candle = closes[-1] > closes[-2]
+    pattern = detect_candlestick_pattern(opens, highs, lows, closes)
 
     if rsi < 30:
         rsi_description = f"{rsi} (منطقة ذروة بيع صريحة أدنى من 30)"
@@ -90,7 +132,10 @@ def get_stock_metrics(symbol):
     else:
         rsi_description = f"{rsi} (منطقة محايدة)"
 
-    trend_description = "صعودي على المتوسطات (أعلى من EMA20 و EMA50)" if close_price >= ema20 and close_price >= ema50 else "هابط أو غير مستقر"
+    if ema50 is not None:
+        trend_description = "صعودي على المتوسطات (أعلى من EMA20 و EMA50)" if close_price >= ema20 and close_price >= ema50 else "هابط أو ضغط بيعي"
+    else:
+        trend_description = "صعودي (أعلى من EMA20)" if close_price >= ema20 else "هابط (أسفل EMA20)"
 
     stop_loss_calculated = round(support_level - (1.2 * atr), 2)
     if stop_loss_calculated >= close_price:
@@ -98,47 +143,50 @@ def get_stock_metrics(symbol):
 
     risk = close_price - stop_loss_calculated
     take_profit_calculated = round(close_price + (2.0 * risk), 2)
+    if resistance_level > close_price and resistance_level < take_profit_calculated:
+        take_profit_calculated = resistance_level
 
     return {
         "close": close_price,
         "rsi": rsi,
         "rsi_description": rsi_description,
         "ema20": ema20,
-        "ema50": ema50,
+        "ema50_str": ema50_str,
         "atr": atr,
         "trend_description": trend_description,
         "volume": current_volume,
         "avg_volume": avg_volume,
         "support": support_level,
         "resistance": resistance_level,
-        "is_bullish_candle": is_bullish_candle,
+        "pattern": pattern,
         "stop_loss": stop_loss_calculated,
         "take_profit": take_profit_calculated
     }
 
-def ask_ai_decision(symbol, metrics):
+def ask_ai_decision(symbol, metrics, market_trend):
     prompt = f"""
 أنت محلل مالي. البيانات التالية جرى حسابها ببرمجية بايثون:
+- اتجاه السوق العام (SPY): {market_trend}
 - السهم: {symbol}
 - السعر الحالي: ${metrics['close']}
 - مؤشر ATR: {metrics['atr']}
 - حالة RSI: {metrics['rsi_description']}
-- الاتجاه العام: {metrics['trend_description']} (EMA20: ${metrics['ema20']}, EMA50: ${metrics['ema50']})
+- الاتجاه العام: {metrics['trend_description']} (EMA20: ${metrics['ema20']}, EMA50: {metrics['ema50_str']})
 - حجم التداول: {metrics['volume']:,} (المتوسط لـ20 يوم: {metrics['avg_volume']:,})
 - مستوى الدعم: ${metrics['support']} | المقاومة: ${metrics['resistance']}
-- شمعة صاعدة إيجابية: {metrics['is_bullish_candle']}
-- وقف الخسارة المحسوب بـ ATR أسفل الدعم: ${metrics['stop_loss']}
-- الهدف المحسوب (نسبة 1:2): ${metrics['take_profit']}
+- نموذج الشموع اليابانية: {metrics['pattern']}
+- وقف الخسارة الديناميكي المحسوب بـ ATR: ${metrics['stop_loss']}
+- هدف جني الأرباح المحسوب بناءً على المقاومة والنسبة: ${metrics['take_profit']}
 
 قواعد التحليل:
-1. القرار يكون BUY فقط إذا كان السعر قريباً من الدعم، والشمعة الحالية إيجابية (True)، والاتجاه العام صعودي أو محايد قادم من ارتداد مع حجم تداول مناسب.
-2. إذا كان السعر في اتجاه هابط صريح أسفل EMA50 والشمعة هابطة، اجعل القرار HOLD.
+1. القرار يكون BUY فقط إذا كان اتجاه السوق أو السهم صعودياً، والسعر قريباً من الدعم، وتظهر شمعة إيجابية أو انعكاسية (مثل المطرقة أو الابتلاعية) مع حجم تداول مناسب.
+2. إذا كان السعر في اتجاه هابط صريح أو اتجاه السوق العام هابطاً والشمعة غير انعكاسية، اجعل القرار HOLD.
 3. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد.
 
 أرجع الإجابة بصيغة JSON فقط:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "تفسير دقيق يربط السعر والاتجاه وحجم التداول ومؤشر ATR"
+  "reason": "تفسير دقيق يربط اتجاه السوق والسهم ونموذج الشمعة وحجم التداول ومؤشر ATR"
 }}
 """
     headers = {
@@ -162,32 +210,37 @@ def ask_ai_decision(symbol, metrics):
     except Exception as e:
         return {"action": "HOLD", "reason": "خطأ في المعالجة"}
 
-def run_hybrid_bot(symbol):
+def run_hybrid_bot(symbol, market_trend):
     metrics = get_stock_metrics(symbol)
     if not metrics:
         print(f"فشل جلب البيانات للسهم {symbol}")
         return
 
-    ai_decision = ask_ai_decision(symbol, metrics)
-    action_ar = "شراء (BUY)" if ai_decision.get("action") == "BUY" else "انتظار (HOLD)"
+    ai_decision = ask_ai_decision(symbol, metrics, market_trend)
+    is_buy = ai_decision.get("action") == "BUY"
+    action_ar = "شراء (BUY)" if is_buy else "انتظار (HOLD)"
     vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "طبيعي أو منخفض 📉"
+
+    status_note = "" if is_buy else " (افتراضي عند التفعيل)"
 
     msg = (
         f"🤖 *تنبيه التحليل الفني المطور*\n\n"
+        f"🌐 *اتجاه السوق (SPY):* {market_trend}\n"
         f"📈 *السهم:* {symbol}\n"
         f"💵 *السعر الحالي:* ${metrics['close']}\n"
+        f"🕯️ *نموذج الشمعة:* {metrics['pattern']}\n"
         f"📏 *مؤشر ATR:* {metrics['atr']}\n"
         f"📊 *RSI:* {metrics['rsi_description']}\n"
         f"📉 *الاتجاه:* {metrics['trend_description']}\n"
         f"🛡️ *الدعم:* ${metrics['support']} | 🧗 *المقاومة:* ${metrics['resistance']}\n"
         f"📦 *الحجم:* {metrics['volume']:,} ({vol_status})\n"
-        f"🎯 *الهدف المقترح:* ${metrics['take_profit']} | 🛑 *الوقف (ديناميكي ATR):* ${metrics['stop_loss']}\n\n"
+        f"🎯 *الهدف المقترح:* ${metrics['take_profit']}{status_note} | 🛑 *الوقف (ATR):* ${metrics['stop_loss']}{status_note}\n\n"
         f"🎯 *القرار:* `{action_ar}`\n"
         f"💡 *السبب الفني:* {ai_decision.get('reason')}"
     )
     send_telegram_msg(msg)
 
-    if ai_decision.get("action") == "BUY":
+    if is_buy:
         order_data = MarketOrderRequest(
             symbol=symbol,
             qty=1,
@@ -199,6 +252,7 @@ def run_hybrid_bot(symbol):
         order = trading_client.submit_order(order_data=order_data)
         send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
 
+market_trend = get_market_trend()
 symbols = ["AMIX", "ADXN"]
 for symbol in symbols:
-    run_hybrid_bot(symbol)
+    run_hybrid_bot(symbol, market_trend)
