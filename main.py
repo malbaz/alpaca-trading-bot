@@ -1,6 +1,6 @@
 import os
-import requests
 import json
+import requests
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -101,7 +101,7 @@ def get_stock_metrics(symbol):
 
 def ask_ai_decision(symbol, metrics):
     prompt = f"""
-أنت محلل مالي محترف. المعطيات التالية جرى تقييمها وتدقيقها حسابياً ببرمجية بايثون وفق معايير TradingView وInvestopedia:
+أنت محلل مالي. البيانات التالية جرى حسابها ببرمجية بايثون:
 - السهم: {symbol}
 - السعر الحالي: ${metrics['close']}
 - حالة RSI: {metrics['rsi_description']}
@@ -112,10 +112,10 @@ def ask_ai_decision(symbol, metrics):
 - مستوى وقف الخسارة (أسفل الدعم بنسبة 2%): ${metrics['stop_loss']}
 - هدف جني الأرباح (نسبة المخاطرة للعائد 1:2): ${metrics['take_profit']}
 
-قواعد الصياغة والتحليل:
+القواعد:
 1. اعتمد التقييم المحسوب لحالة RSI والاتجاه العام كما هو دون أي تعديل.
-2. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد وتجنب الأخطاء الإملائية.
-3. القرار يكون BUY فقط إذا كان السعر قريباً من الدعم مع وجود حجم تداول مرتفع وتأكيد ارتداد، وغير ذلك يكون القرار HOLD.
+2. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد وتجنب كلمة 'سعودي'.
+3. القرار يكون BUY فقط إذا كان السعر قريباً من الدعم مع حجم تداول مرتفع وتأكيد ارتداد، وإلا يكون القرار HOLD.
 
 أرجع الإجابة بصيغة JSON فقط:
 {{
@@ -152,19 +152,19 @@ def run_hybrid_bot(symbol):
 
     ai_decision = ask_ai_decision(symbol, metrics)
     action_ar = "شراء (BUY)" if ai_decision.get("action") == "BUY" else "انتظار (HOLD)"
-    vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "منخفض/طبيعي 📉"
+    vol_status = "مرتفع" if metrics['volume'] > metrics['avg_volume'] else "منخفض أو طبيعي"
 
     msg = (
-        f"🤖 *تنبيه التحليل الفني المطور*\n\n"
-        f"📈 *السهم:* {symbol}\n"
-        f"💵 *السعر الحالي:* ${metrics['close']}\n"
-        f"📊 *RSI:* {metrics['rsi_description']}\n"
-        f"📈 *الاتجاه:* {metrics['trend_description']}\n"
-        f"🛡️ *الدعم:* ${metrics['support']} | 🧗 *المقاومة:* ${metrics['resistance']}\n"
-        f"📦 *الحجم:* {metrics['volume']:,} (الحالة: {vol_status})\n"
-        f"🎯 *الهدف (1:2):* ${metrics['take_profit']} | 🛑 *الوقف (أسفل الدعم):* ${metrics['stop_loss']}\n\n"
-        f"🎯 *القرار:* `{action_ar}`\n"
-        f"💡 *السبب الفني:* {ai_decision.get('reason')}"
+        f"تنبيه التحليل الفني\n\n"
+        f"السهم: {symbol}\n"
+        f"السعر الحالي: ${metrics['close']}\n"
+        f"RSI: {metrics['rsi_description']}\n"
+        f"الاتجاه: {metrics['trend_description']}\n"
+        f"الدعم: ${metrics['support']} | المقاومة: ${metrics['resistance']}\n"
+        f"الحجم: {metrics['volume']:,} (الحالة: {vol_status})\n"
+        f"الهدف (1:2): ${metrics['take_profit']} | الوقف (أسفل الدعم): ${metrics['stop_loss']}\n\n"
+        f"القرار: {action_ar}\n"
+        f"السبب الفني: {ai_decision.get('reason')}"
     )
     send_telegram_msg(msg)
 
@@ -178,7 +178,7 @@ def run_hybrid_bot(symbol):
             stop_loss=StopLossRequest(stop_price=metrics['stop_loss'])
         )
         order = trading_client.submit_order(order_data=order_data)
-        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
+        send_telegram_msg(f"تم تنفيذ أمر الشراء للسهم {symbol}\nالهدف: ${metrics['take_profit']} | الوقف: ${metrics['stop_loss']}")
 
 symbols = ["AMIX", "ADXN"]
 for symbol in symbols:
