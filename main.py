@@ -1,6 +1,8 @@
 import os
 import json
+import time
 import requests
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -21,11 +23,16 @@ def send_telegram_msg(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload)
     except Exception as e:
         print("Telegram Error:", e)
+
+def get_date_range(days_back=120):
+    today = datetime.now().date()
+    start_date = today - timedelta(days=days_back)
+    return start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
 
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
@@ -60,16 +67,13 @@ def detect_candlestick_pattern(opens, highs, lows, closes):
         return "بيانات غير كافية"
     o1, c1 = opens[-2], closes[-2]
     o2, h2, l2, c2 = opens[-1], highs[-1], lows[-1], closes[-1]
-    
     body = abs(c2 - o2)
     candle_range = h2 - l2
     
     if o1 > c1 and c2 > o2 and o2 <= c1 and c2 >= o1:
         return "شمعة ابتلاعية صاعدة (Bullish Engulfing)"
-    
     if candle_range > 0 and (min(o2, c2) - l2) >= (2 * body) and (h2 - max(o2, c2)) <= (0.2 * candle_range):
         return "شمعة مطرقة انعكاسية (Hammer)"
-    
     if c2 > o2:
         return "شمعة صاعدة عادية"
     elif c2 < o2:
@@ -78,7 +82,8 @@ def detect_candlestick_pattern(opens, highs, lows, closes):
         return "شمعة دوجي محايدة"
 
 def get_market_trend():
-    url = f"https://api.polygon.io/v2/aggs/ticker/SPY/range/1/day/2026-01-01/2026-12-31?adjusted=true&sort=desc&limit=30&apiKey={POLYGON_API_KEY}"
+    start_d, end_d = get_date_range(60)
+    url = f"https://api.polygon.io/v2/aggs/ticker/SPY/range/1/day/{start_d}/{end_d}?adjusted=true&sort=desc&limit=30&apiKey={POLYGON_API_KEY}"
     try:
         res = requests.get(url).json()
         results = res.get("results", [])
@@ -91,7 +96,8 @@ def get_market_trend():
     return "غير محدد"
 
 def get_stock_metrics(symbol):
-    url_hist = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2026-01-01/2026-12-31?adjusted=true&sort=desc&limit=100&apiKey={POLYGON_API_KEY}"
+    start_d, end_d = get_date_range(120)
+    url_hist = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_d}/{end_d}?adjusted=true&sort=desc&limit=100&apiKey={POLYGON_API_KEY}"
     res_hist = requests.get(url_hist).json()
     
     results = res_hist.get("results", [])
@@ -126,9 +132,9 @@ def get_stock_metrics(symbol):
     pattern = detect_candlestick_pattern(opens, highs, lows, closes)
 
     if rsi < 30:
-        rsi_description = f"{rsi} (منطقة ذروة بيع صريحة أدنى من 30)"
+        rsi_description = f"{rsi} (ذروة بيع صريحة أدنى من 30)"
     elif rsi > 70:
-        rsi_description = f"{rsi} (منطقة ذروة شراء صريحة أعلى من 70)"
+        rsi_description = f"{rsi} (ذروة شراء صريحة أعلى من 70)"
     else:
         rsi_description = f"{rsi} (منطقة محايدة)"
 
@@ -143,7 +149,12 @@ def get_stock_metrics(symbol):
 
     risk = close_price - stop_loss_calculated
     take_profit_calculated = round(close_price + (2.0 * risk), 2)
+    
+    risk_reward_valid = True
     if resistance_level > close_price and resistance_level < take_profit_calculated:
+        potential_reward = resistance_level - close_price
+        if risk > 0 and (potential_reward / risk) < 1.5:
+            risk_reward_valid = False
         take_profit_calculated = resistance_level
 
     return {
@@ -160,7 +171,8 @@ def get_stock_metrics(symbol):
         "resistance": resistance_level,
         "pattern": pattern,
         "stop_loss": stop_loss_calculated,
-        "take_profit": take_profit_calculated
+        "take_profit": take_profit_calculated,
+        "risk_reward_valid": risk_reward_valid
     }
 
 def ask_ai_decision(symbol, metrics, market_trend):
@@ -175,18 +187,19 @@ def ask_ai_decision(symbol, metrics, market_trend):
 - حجم التداول: {metrics['volume']:,} (المتوسط لـ20 يوم: {metrics['avg_volume']:,})
 - مستوى الدعم: ${metrics['support']} | المقاومة: ${metrics['resistance']}
 - نموذج الشموع اليابانية: {metrics['pattern']}
+- جدوى نسبة المخاطرة للعائد (R:R >= 1.5): {metrics['risk_reward_valid']}
 - وقف الخسارة الديناميكي المحسوب بـ ATR: ${metrics['stop_loss']}
-- هدف جني الأرباح المحسوب بناءً على المقاومة والنسبة: ${metrics['take_profit']}
+- هدف جني الأرباح المحسوب: ${metrics['take_profit']}
 
 قواعد التحليل:
-1. القرار يكون BUY فقط إذا كان اتجاه السوق أو السهم صعودياً، والسعر قريباً من الدعم، وتظهر شمعة إيجابية أو انعكاسية (مثل المطرقة أو الابتلاعية) مع حجم تداول مناسب.
-2. إذا كان السعر في اتجاه هابط صريح أو اتجاه السوق العام هابطاً والشمعة غير انعكاسية، اجعل القرار HOLD.
+1. القرار يكون BUY فقط إذا كان اتجاه السوق أو السهم صعودياً، والسعر قريباً من الدعم، وتظهر شمعة إيجابية أو انعكاسية، وكانت جدوى المخاطرة للعائد مقبولة (True).
+2. إذا كانت جدوى المخاطرة للعائد غير مقبولة (False)، أو كان السعر في اتجاه هابط صريح أسفل EMA50 والشمعة غير انعكاسية، اجعل القرار HOLD.
 3. استخدم كلمة 'صعودي' لوصف الاتجاه الصاعد.
 
 أرجع الإجابة بصيغة JSON فقط:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "تفسير دقيق يربط اتجاه السوق والسهم ونموذج الشمعة وحجم التداول ومؤشر ATR"
+  "reason": "تفسير دقيق يربط اتجاه السوق والسهم ونموذج الشمعة وحجم التداول ونسبة المخاطرة للعائد"
 }}
 """
     headers = {
@@ -224,19 +237,19 @@ def run_hybrid_bot(symbol, market_trend):
     status_note = "" if is_buy else " (افتراضي عند التفعيل)"
 
     msg = (
-        f"🤖 *تنبيه التحليل الفني المطور*\n\n"
-        f"🌐 *اتجاه السوق (SPY):* {market_trend}\n"
-        f"📈 *السهم:* {symbol}\n"
-        f"💵 *السعر الحالي:* ${metrics['close']}\n"
-        f"🕯️ *نموذج الشمعة:* {metrics['pattern']}\n"
-        f"📏 *مؤشر ATR:* {metrics['atr']}\n"
-        f"📊 *RSI:* {metrics['rsi_description']}\n"
-        f"📉 *الاتجاه:* {metrics['trend_description']}\n"
-        f"🛡️ *الدعم:* ${metrics['support']} | 🧗 *المقاومة:* ${metrics['resistance']}\n"
-        f"📦 *الحجم:* {metrics['volume']:,} ({vol_status})\n"
-        f"🎯 *الهدف المقترح:* ${metrics['take_profit']}{status_note} | 🛑 *الوقف (ATR):* ${metrics['stop_loss']}{status_note}\n\n"
-        f"🎯 *القرار:* `{action_ar}`\n"
-        f"💡 *السبب الفني:* {ai_decision.get('reason')}"
+        f"🤖 <b>تنبيه التحليل الفني المطور</b>\n\n"
+        f"🌐 <b>اتجاه السوق (SPY):</b> {market_trend}\n"
+        f"📈 <b>السهم:</b> {symbol}\n"
+        f"💵 <b>السعر الحالي:</b> ${metrics['close']}\n"
+        f"🕯️ <b>نموذج الشمعة:</b> {metrics['pattern']}\n"
+        f"📏 <b>مؤشر ATR:</b> {metrics['atr']}\n"
+        f"📊 <b>RSI:</b> {metrics['rsi_description']}\n"
+        f"📉 <b>الاتجاه:</b> {metrics['trend_description']}\n"
+        f"🛡️ <b>الدعم:</b> ${metrics['support']} | 🧗 <b>المقاومة:</b> ${metrics['resistance']}\n"
+        f"📦 <b>الحجم:</b> {metrics['volume']:,} ({vol_status})\n"
+        f"🎯 <b>الهدف المقترح:</b> ${metrics['take_profit']}{status_note} | 🛑 <b>الوقف (ATR):</b> ${metrics['stop_loss']}{status_note}\n\n"
+        f"🎯 <b>القرار:</b> <code>{action_ar}</code>\n"
+        f"💡 <b>السبب الفني:</b> {ai_decision.get('reason')}"
     )
     send_telegram_msg(msg)
 
@@ -250,9 +263,10 @@ def run_hybrid_bot(symbol, market_trend):
             stop_loss=StopLossRequest(stop_price=metrics['stop_loss'])
         )
         order = trading_client.submit_order(order_data=order_data)
-        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
+        send_telegram_msg(f"✅ <b>تم تنفيذ أمر الشراء للسهم {symbol}</b>\n🎯 الهدف: ${metrics['take_profit']} | 🛑 الوقف: ${metrics['stop_loss']}")
 
 market_trend = get_market_trend()
 symbols = ["AMIX", "ADXN"]
 for symbol in symbols:
     run_hybrid_bot(symbol, market_trend)
+    time.sleep(12)
