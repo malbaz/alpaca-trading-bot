@@ -47,38 +47,59 @@ def calculate_rsi(prices, period=14):
     return round(100 - (100 / (1 + rs)), 2)
 
 def get_stock_metrics(symbol):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/prev?adjusted=true&apiKey={POLYGON_API_KEY}"
-    res = requests.get(url).json()
-    if not res.get("results"):
-        return None
-    close_price = res["results"][0]["c"]
-    
     url_hist = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2026-01-01/2026-12-31?adjusted=true&sort=desc&limit=30&apiKey={POLYGON_API_KEY}"
     res_hist = requests.get(url_hist).json()
     
-    if res_hist.get("results"):
-        closes = [item["c"] for item in reversed(res_hist["results"])]
-        rsi = calculate_rsi(closes)
-        ema20 = round(sum(closes[-20:]) / min(len(closes), 20), 2)
-    else:
-        rsi = 50.0
-        ema20 = close_price
-        
-    return {"close": close_price, "rsi": rsi, "ema20": ema20}
+    results = res_hist.get("results", [])
+    if not results or len(results) < 5:
+        return None
+
+    closes = [item["c"] for item in reversed(results)]
+    volumes = [item["v"] for item in reversed(results)]
+    lows = [item["l"] for item in reversed(results)]
+    highs = [item["h"] for item in reversed(results)]
+
+    close_price = closes[-1]
+    rsi = calculate_rsi(closes)
+    ema20 = round(sum(closes[-20:]) / min(len(closes), 20), 2)
+    
+    current_volume = volumes[-1]
+    avg_volume = int(sum(volumes[-20:]) / min(len(volumes), 20))
+    
+    support_level = min(lows[-20:])
+    resistance_level = max(highs[-20:])
+
+    return {
+        "close": close_price,
+        "rsi": rsi,
+        "ema20": ema20,
+        "volume": current_volume,
+        "avg_volume": avg_volume,
+        "support": support_level,
+        "resistance": resistance_level
+    }
 
 def ask_ai_decision(symbol, metrics):
     prompt = f"""
-Analyze stock {symbol}:
-Price: ${metrics['close']}
-RSI: {metrics['rsi']}
-EMA20: ${metrics['ema20']}
+أنت محلل مالي محترف. قم بتحليل سهم {symbol} بناءً على المعطيات التالية:
+- السعر الحالي: ${metrics['close']}
+- مؤشر القوة النسبية RSI (14): {metrics['rsi']}
+- المتوسط المتحرك EMA (20): ${metrics['ema20']}
+- حجم التداول الحالي: {metrics['volume']} (المتوسط لـ20 يوم: {metrics['avg_volume']})
+- مستوى الدعم (أدنى 20 يوم): ${metrics['support']}
+- مستوى المقاومة (أعلى 20 يوم): ${metrics['resistance']}
 
-Respond ONLY with a JSON object. Write the 'reason' value in clear Arabic:
+قواعد التحليل الصارمة:
+1. RSI أقل من 30 هو ذروة بيع، ولكن لا توصي بالشراء إذا كان السعر في اتجاه هابط قوي أسفل EMA20 وحجم التداول ضعيف.
+2. يتطلب قرار الشراء (BUY) أن يكون السعر قريباً من مستوى الدعم (${metrics['support']}) مع وجود حجم تداول أعلى من المتوسط وتأكيد ارتداد.
+3. إذا كان الاتجاه هابطاً أو المعطيات غير مكتملة، اجعل القرار (HOLD).
+
+أرجع الإجابة فقط بصيغة JSON التالية، واكتب 'reason' باللغة العربية المباشرة والدقيقة:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "سبب القرار باللغة العربية المباشرة والواضحة",
-  "stop_loss_pct": 0.01,
-  "take_profit_pct": 0.02
+  "reason": "شرح دقيق يربط بين السعر ومستوى الدعم والحجم والاتجاه العام",
+  "stop_loss_pct": 0.02,
+  "take_profit_pct": 0.04
 }}
 """
     headers = {
@@ -98,36 +119,37 @@ Respond ONLY with a JSON object. Write the 'reason' value in clear Arabic:
             content = response["choices"][0]["message"]["content"]
             return json.loads(content)
         else:
-            print("OpenAI Error Details:", response)
-            return {"action": "HOLD", "reason": "خطأ في الاتصال بالذكاء الاصطناعي"}
+            return {"action": "HOLD", "reason": "خطأ في الاستجابة من OpenAI"}
     except Exception as e:
-        print("AI Processing Error:", e)
         return {"action": "HOLD", "reason": "خطأ في المعالجة"}
 
 def run_hybrid_bot(symbol):
     metrics = get_stock_metrics(symbol)
     if not metrics:
-        print("فشل في جلب البيانات.")
+        print(f"فشل جلب البيانات للسهم {symbol}")
         return
 
     ai_decision = ask_ai_decision(symbol, metrics)
+    action_ar = "شراء (BUY)" if ai_decision.get("action") == "BUY" else "انتظار (HOLD)"
 
-    action_ar = "شراء" if ai_decision.get("action") == "BUY" else "الانتظار (HOLD)"
+    vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "طبيعي/منخفض 📉"
 
     msg = (
-        f"🤖 *تنبيه بوت التداول*\n\n"
+        f"🤖 *تنبيه التحليل الفني المطور*\n\n"
         f"📈 *السهم:* {symbol}\n"
         f"💵 *السعر الحالي:* ${metrics['close']}\n"
-        f"📊 *مؤشر RSI:* {metrics['rsi']} | *المتوسط المتحرك EMA20:* ${metrics['ema20']}\n\n"
+        f"📊 *RSI:* {metrics['rsi']} | *EMA20:* ${metrics['ema20']}\n"
+        f"🛡️ *الدعم:* ${metrics['support']} | 🧗 *المقاومة:* ${metrics['resistance']}\n"
+        f"📦 *الحجم:* {metrics['volume']:,} (الحالة: {vol_status})\n\n"
         f"🎯 *القرار:* `{action_ar}`\n"
-        f"💡 *السبب:* {ai_decision.get('reason')}"
+        f"💡 *السبب الفني:* {ai_decision.get('reason')}"
     )
     send_telegram_msg(msg)
 
     if ai_decision.get("action") == "BUY":
         close_price = metrics["close"]
-        sl_pct = ai_decision.get("stop_loss_pct", 0.01)
-        tp_pct = ai_decision.get("take_profit_pct", 0.02)
+        sl_pct = ai_decision.get("stop_loss_pct", 0.02)
+        tp_pct = ai_decision.get("take_profit_pct", 0.04)
         
         stop_loss = round(close_price * (1 - sl_pct), 2)
         take_profit = round(close_price * (1 + tp_pct), 2)
@@ -141,9 +163,7 @@ def run_hybrid_bot(symbol):
             stop_loss=StopLossRequest(stop_price=stop_loss)
         )
         order = trading_client.submit_order(order_data=order_data)
-        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}* | رقم الأمر: `{order.id}`")
-    else:
-        print("القرار: انتظار. لم يتم تقديم أي أمر شراء.")
+        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${take_profit} | 🛑 الوقف: ${stop_loss}")
 
 symbols = ["AMIX", "ADXN"]
 for symbol in symbols:
