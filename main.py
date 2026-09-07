@@ -63,8 +63,8 @@ def get_stock_metrics(symbol):
     rsi = calculate_rsi(closes)
     ema20 = round(sum(closes[-20:]) / min(len(closes), 20), 2)
     
-    current_volume = volumes[-1]
-    avg_volume = int(sum(volumes[-20:]) / min(len(volumes), 20))
+    current_volume = int(round(volumes[-1]))
+    avg_volume = int(round(sum(volumes[-20:]) / min(len(volumes), 20)))
     
     support_level = min(lows[-20:])
     resistance_level = max(highs[-20:])
@@ -89,17 +89,17 @@ def ask_ai_decision(symbol, metrics):
 - مستوى الدعم (أدنى 20 يوم): ${metrics['support']}
 - مستوى المقاومة (أعلى 20 يوم): ${metrics['resistance']}
 
-قواعد التحليل الصارمة:
-1. RSI أقل من 30 هو ذروة بيع، ولكن لا توصي بالشراء إذا كان السعر في اتجاه هابط قوي أسفل EMA20 وحجم التداول ضعيف.
-2. يتطلب قرار الشراء (BUY) أن يكون السعر قريباً من مستوى الدعم (${metrics['support']}) مع وجود حجم تداول أعلى من المتوسط وتأكيد ارتداد.
-3. إذا كان الاتجاه هابطاً أو المعطيات غير مكتملة، اجعل القرار (HOLD).
+قواعد وقود تحليلية صارمة:
+1. قيمة RSI بين 30 و70 هي منطقة محايدة. يمنع وصف RSI بأنه ذروة بيع (Oversold) إلا إذا كانت القيمة أقل من 30 تماماً.
+2. يتطلب قرار الشراء (BUY) أن يكون السعر عند مستوى الدعم (${metrics['support']}) أو قريباً منه مع حجم تداول أعلى من المتوسط وتأكيد ارتداد.
+3. إذا كان الاتجاه هابطاً أسفل EMA20 بدون حجم تداول داعم، اجعل القرار (HOLD).
 
-أرجع الإجابة فقط بصيغة JSON التالية، واكتب 'reason' باللغة العربية المباشرة والدقيقة:
+أرجع الإجابة بصيغة JSON فقط، واكتب 'reason' باللغة العربية المباشرة:
 {{
   "action": "BUY" or "HOLD",
-  "reason": "شرح دقيق يربط بين السعر ومستوى الدعم والحجم والاتجاه العام",
-  "stop_loss_pct": 0.02,
-  "take_profit_pct": 0.04
+  "reason": "تفسير دقيق يربط السعر بالحجم ومستويات الدعم والاتجاه",
+  "stop_loss_price": {round(metrics['close'] * 0.98, 2)},
+  "take_profit_price": {round(metrics['close'] * 1.04, 2)}
 }}
 """
     headers = {
@@ -132,7 +132,10 @@ def run_hybrid_bot(symbol):
     ai_decision = ask_ai_decision(symbol, metrics)
     action_ar = "شراء (BUY)" if ai_decision.get("action") == "BUY" else "انتظار (HOLD)"
 
-    vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "طبيعي/منخفض 📉"
+    vol_status = "مرتفع 📈" if metrics['volume'] > metrics['avg_volume'] else "منخفض/طبيعي 📉"
+    
+    sl_price = ai_decision.get("stop_loss_price", round(metrics['close'] * 0.98, 2))
+    tp_price = ai_decision.get("take_profit_price", round(metrics['close'] * 1.04, 2))
 
     msg = (
         f"🤖 *تنبيه التحليل الفني المطور*\n\n"
@@ -140,30 +143,24 @@ def run_hybrid_bot(symbol):
         f"💵 *السعر الحالي:* ${metrics['close']}\n"
         f"📊 *RSI:* {metrics['rsi']} | *EMA20:* ${metrics['ema20']}\n"
         f"🛡️ *الدعم:* ${metrics['support']} | 🧗 *المقاومة:* ${metrics['resistance']}\n"
-        f"📦 *الحجم:* {metrics['volume']:,} (الحالة: {vol_status})\n\n"
+        f"📦 *الحجم:* {metrics['volume']:,} (الحالة: {vol_status})\n"
+        f"🎯 *الهدف المقترح:* ${tp_price} | 🛑 *الوقف المقترح:* ${sl_price}\n\n"
         f"🎯 *القرار:* `{action_ar}`\n"
         f"💡 *السبب الفني:* {ai_decision.get('reason')}"
     )
     send_telegram_msg(msg)
 
     if ai_decision.get("action") == "BUY":
-        close_price = metrics["close"]
-        sl_pct = ai_decision.get("stop_loss_pct", 0.02)
-        tp_pct = ai_decision.get("take_profit_pct", 0.04)
-        
-        stop_loss = round(close_price * (1 - sl_pct), 2)
-        take_profit = round(close_price * (1 + tp_pct), 2)
-
         order_data = MarketOrderRequest(
             symbol=symbol,
             qty=1,
             side=OrderSide.BUY,
             time_in_force=TimeInForce.GTC,
-            take_profit=TakeProfitRequest(limit_price=take_profit),
-            stop_loss=StopLossRequest(stop_price=stop_loss)
+            take_profit=TakeProfitRequest(limit_price=tp_price),
+            stop_loss=StopLossRequest(stop_price=sl_price)
         )
         order = trading_client.submit_order(order_data=order_data)
-        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${take_profit} | 🛑 الوقف: ${stop_loss}")
+        send_telegram_msg(f"✅ *تم تنفيذ أمر الشراء للسهم {symbol}*\n🎯 الهدف: ${tp_price} | 🛑 الوقف: ${sl_price}")
 
 symbols = ["AMIX", "ADXN"]
 for symbol in symbols:
