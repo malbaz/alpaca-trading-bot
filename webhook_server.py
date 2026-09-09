@@ -3,13 +3,14 @@ import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-# استدعاء دالة التحليل الفني الشامل من main.py
+load_dotenv(override=True)
+
+# محاولة آمنة لاستدعاء دالة التحليل دون إيقاف السيرفر عند غياب مفاتيح Alpaca
 try:
     from main import analyze_stock_opportunity
-except ImportError:
+except Exception as e:
+    print("Main module import skipped:", e)
     analyze_stock_opportunity = None
-
-load_dotenv(override=True)
 
 app = Flask(__name__)
 
