@@ -3,32 +3,27 @@ import time
 import requests
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
-from alpaca.trading.client import TradingClient
+from apscheduler.schedulers.background import BackgroundScheduler
 
 load_dotenv(override=True)
 
 app = Flask(__name__)
 
 # المتغيرات الأساسية للمشروع
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
 ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
-# تهيئة عميل Alpaca (ورقي)
-trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
+# قائمة الأسهم المتابعة للفحص الدوري
+WATCHLIST_SYMBOLS = [
+    "AAPL", "NVDA", "AMIX", "ADXN", "INDP", "AAL", 
+    "VALE", "BIAF", "BITF", "CLNE", "SKYE", "NAUT", "SGLY", "JOBY"
+]
 
-# بيانات الأسهم المملوكة يدويًا
-MANUAL_POSITIONS = {
-    "AMIX": {"qty": 427, "avg_price": 13.86},
-    "ADXN": {"qty": 863, "avg_price": 8.85}
-}
-
-# ذاكرة منع التكرار
+# ذاكرة منع تكرار التنبيهات (4 ساعات)
 LAST_ALERT_TIME = {}
-ALERT_COOLDOWN_SECONDS = 14400  # 4 ساعات
+ALERT_COOLDOWN_SECONDS = 14400
 
 def send_telegram_msg(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -48,7 +43,6 @@ def send_telegram_msg(message):
 
 def get_zoya_compliance(symbol):
     if not ZOYA_API_KEY:
-        print("Zoya Warning: ZOYA_API_KEY is not set.")
         return None
     
     headers = {
@@ -66,7 +60,6 @@ def get_zoya_compliance(symbol):
           report {
             nonPermissibleRevenuePercentage
             debtToMarketCapPercentage
-            interestBearingAssetsPercentage
           }
         }
       }
@@ -75,20 +68,35 @@ def get_zoya_compliance(symbol):
     payload = {"query": query, "variables": {"symbol": symbol.upper()}}
     try:
         res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=10)
-        print(f"Zoya Status: {res.status_code}")
         if res.status_code == 200:
             data = res.json()
-            if "errors" in data:
-                print(f"Zoya GraphQL Error: {data['errors']}")
-                return None
-            return data.get("data", {}).get("security", {}).get("compliance", {})
+            if "errors" not in data:
+                return data.get("data", {}).get("security", {}).get("compliance", {})
     except Exception as e:
-        print(f"Error connecting to Zoya API: {e}")
+        print(f"Zoya Error ({symbol}): {e}")
     return None
+
+def scheduled_market_scan():
+    """مجدول الفحص الدوري المدمج لإرسال تقارير الأسهم الشرعية القوية فقط"""
+    print("Running scheduled market scan...")
+    valid_opportunities = []
+
+    for symbol in WATCHLIST_SYMBOLS:
+        zoya_data = get_zoya_compliance(symbol)
+        
+        # تصفية الشرعية: نأخذ فقط الأسهم المعتمدة
+        if zoya_data and zoya_data.get("isCompliant") and zoya_data.get("status") == "COMPLIANT":
+            valid_opportunities.append(f"🟢 `{symbol}`: متوافق شرعياً | إشارة: **فرصة دخول**")
+
+    if valid_opportunities:
+        report_msg = f"📊 **تقرير الفحص المباشر الموحد**\n"
+        report_msg += f"تم فحص الأسهم ومطابقتها للشريعة:\n\n"
+        report_msg += "\n".join(valid_opportunities)
+        send_telegram_msg(report_msg)
 
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({"status": "online", "message": "Trading Webhook Server is active"}), 200
+    return jsonify({"status": "online", "message": "Unified Trading Webhook Server is active"}), 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -104,15 +112,13 @@ def webhook():
     if not symbol:
         return jsonify({"status": "error", "message": "Symbol missing"}), 200
 
-    # 1. منع التكرار خلال 4 ساعات
+    # 1. منع التكرار
     current_time = time.time()
     if symbol in LAST_ALERT_TIME:
-        elapsed = current_time - LAST_ALERT_TIME[symbol]
-        if elapsed < ALERT_COOLDOWN_SECONDS:
-            print(f"Ignored {symbol}: Cooldown active ({int(elapsed)}s remaining)")
+        if current_time - LAST_ALERT_TIME[symbol] < ALERT_COOLDOWN_SECONDS:
             return jsonify({"status": "ignored", "reason": "Cooldown active"}), 200
 
-    # 2. الفحص الشرعي عبر Zoya API
+    # 2. الفحص الشرعي عبر Zoya
     zoya_data = get_zoya_compliance(symbol)
     
     if zoya_data:
@@ -132,7 +138,7 @@ def webhook():
 ---
 ⚠️ **ملاحظة شرعية:** تعذر جلب البيانات التلقائية من Zoya (يرجى التحقق اليدوي)."""
 
-    # 3. صياغة وإرسال التنبيه
+    # 3. إرسال التنبيه الفوري
     msg = f"""🔥 **تنبيه فرصة تداول**
 
 🏷️ **السهم:** `{symbol}`
@@ -146,21 +152,10 @@ def webhook():
 
     return jsonify({"status": "success", "message": "Alert processed and sent to Telegram"}), 200
 
-@app.route('/check-compliance', methods=['GET', 'POST'])
-def run_compliance_check():
-    """فحص أسهم المحفظة اليدوية"""
-    if not MANUAL_POSITIONS:
-        return jsonify({"status": "success", "message": "المحفظة فارغة"}), 200
-
-    alerts = []
-    for symbol in MANUAL_POSITIONS.keys():
-        zoya_data = get_zoya_compliance(symbol)
-        if zoya_data and not zoya_data.get("isCompliant", True):
-            alerts.append(symbol)
-            msg = f"⚠️ **تحذير شرعي:** سهم مملوك `{symbol}` تغيرت حالته إلى غير متوافق!"
-            send_telegram_msg(msg)
-
-    return jsonify({"status": "completed", "flagged_stocks": alerts}), 200
+# تشغيل المجدول الدوري (مرة كل ساعة)
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=scheduled_market_scan, trigger="interval", hours=1)
+scheduler.start()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
