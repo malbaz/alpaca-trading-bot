@@ -33,7 +33,9 @@ def send_telegram_msg(message):
 
 def get_zoya_compliance(symbol):
     if not ZOYA_API_KEY:
+        print("Zoya Warning: ZOYA_API_KEY is not configured in environment variables.")
         return None
+    
     headers = {
         "Authorization": f"Bearer {ZOYA_API_KEY}",
         "Content-Type": "application/json"
@@ -58,11 +60,15 @@ def get_zoya_compliance(symbol):
     payload = {"query": query, "variables": {"symbol": symbol.upper()}}
     try:
         res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=10)
+        print(f"Zoya Response Status: {res.status_code}")
         if res.status_code == 200:
             data = res.json()
+            if "errors" in data:
+                print(f"Zoya GraphQL Errors: {data['errors']}")
+                return None
             return data.get("data", {}).get("security", {}).get("compliance", {})
     except Exception as e:
-        print(f"Zoya Error: {e}")
+        print(f"Zoya Connection Exception: {e}")
     return None
 
 @app.route('/', methods=['GET'])
