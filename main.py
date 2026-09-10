@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# تحميل البيئة بدون تجاوز متغيرات Render
 load_dotenv(override=False)
 
 app = Flask(__name__)
@@ -25,9 +24,8 @@ def send_telegram_msg(message):
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     
-    # طباعة جزء من التوكن للتأكد من قيمته الحقيقية في السجلات
     masked_token = token[:8] + "..." if token else "None"
-    print(f"DEBUG: Executing with Token prefix: '{masked_token}', Chat ID: '{chat_id}'")
+    print(f"DEBUG: Token prefix: '{masked_token}', Chat ID: '{chat_id}'")
     
     if not token or not chat_id:
         print("Telegram Config Error: TOKEN or CHAT_ID missing")
@@ -41,8 +39,7 @@ def send_telegram_msg(message):
     }
     try:
         res = requests.post(url, json=payload, timeout=10)
-        print(f"Telegram Response Status: {res.status_code}")
-        print(f"Telegram Response Body: {res.text}")
+        print(f"Telegram Status: {res.status_code}, Body: {res.text}")
         return res.status_code == 200
     except Exception as e:
         print(f"Telegram Exception: {e}")
@@ -83,75 +80,56 @@ def get_zoya_compliance(symbol):
         print(f"Zoya Error ({symbol}): {e}")
     return None
 
-def scheduled_market_scan():
-    print("Running scheduled market scan...")
-    valid_opportunities = []
-
-    for symbol in WATCHLIST_SYMBOLS:
-        zoya_data = get_zoya_compliance(symbol)
-        if zoya_data and zoya_data.get("isCompliant") and zoya_data.get("status") == "COMPLIANT":
-            valid_opportunities.append(f"🟢 `{symbol}`: متوافق شرعياً | إشارة: **فرصة دخول**")
-
-    if valid_opportunities:
-        report_msg = f"📊 **تقرير الفحص المباشر الموحد**\n\n" + "\n".join(valid_opportunities)
-        send_telegram_msg(report_msg)
-
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({"status": "online"}), 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json or {}
-    symbol = data.get("symbol", "").upper()
-    price = data.get("price", "N/A")
-    action = data.get("action", "ALERT")
-    reason = data.get("reason", "تنبيه تلقائي")
+    try:
+        data = request.json or {}
+        symbol = data.get("symbol", "").upper()
+        price = data.get("price", "N/A")
+        action = data.get("action", "ALERT")
+        reason = data.get("reason", "تنبيه تلقائي")
 
-    if not symbol:
-        return jsonify({"status": "error", "message": "Symbol missing"}), 400
+        if not symbol:
+            return jsonify({"status": "error", "message": "Symbol missing"}), 400
 
-    current_time = time.time()
-    if symbol in LAST_ALERT_TIME:
-        if current_time - LAST_ALERT_TIME[symbol] < ALERT_COOLDOWN_SECONDS:
-            return jsonify({"status": "ignored", "reason": "Cooldown active"}), 200
+        current_time = time.time()
+        if symbol in LAST_ALERT_TIME:
+            if current_time - LAST_ALERT_TIME[symbol] < ALERT_COOLDOWN_SECONDS:
+                return jsonify({"status": "ignored", "reason": "Cooldown active"}), 200
 
-    zoya_data = get_zoya_compliance(symbol)
-    
-    if zoya_data:
-        status = zoya_data.get("status", "UNKNOWN")
-        report = zoya_data.get("report", {}) or {}
-        debt = report.get("debtToMarketCapPercentage", 0) or 0
-        rev = report.get("nonPermissibleRevenuePercentage", 0) or 0
-        
-        shariah_info = f"""---
-🕌 **تقرير الفحص الشرعي (Zoya API):**
-✅ **الحالة:** `{status}`
-📊 **نسبة الديون:** `{debt:.2f}%`
-💰 **الإيرادات غير الحرّة:** `{rev:.2f}%`"""
-    else:
-        shariah_info = """---
-⚠️ **ملاحظة شرعية:** تعذر جلب البيانات التلقائية من Zoya (يرجى التحقق اليدوي)."""
+        # فحص Zoya مع التجاوز الآمن في حال وجود خطأ
+        shariah_info = ""
+        try:
+            zoya_data = get_zoya_compliance(symbol)
+            if zoya_data:
+                status = zoya_data.get("status", "UNKNOWN")
+                report = zoya_data.get("report") or {}
+                debt = report.get("debtToMarketCapPercentage") or 0.0
+                rev = report.get("nonPermissibleRevenuePercentage") or 0.0
+                
+                shariah_info = f"\n---\n🕌 **تقرير الفحص الشرعي (Zoya):**\n✅ **الحالة:** `{status}`\n📊 **نسبة الديون:** `{debt:.2f}%`\n💰 **الإيرادات غير الحرّة:** `{rev:.2f}%`"
+            else:
+                shariah_info = "\n---\n⚠️ **ملاحظة شرعية:** تعذر جلب البيانات التلقائية من Zoya."
+        except Exception as z_err:
+            print(f"Safe Zoya Bypass Error: {z_err}")
+            shariah_info = "\n---\n⚠️ **ملاحظة شرعية:** تعذر جلب البيانات التلقائية من Zoya."
 
-    msg = f"""🔥 **تنبيه فرصة تداول**
+        msg = f"🔥 **تنبيه فرصة تداول**\n\n🏷️ **السهم:** `{symbol}`\n💵 **السعر:** `${price}`\n🎯 **الإجراء:** `{action}`\n📌 **السبب:** {reason}{shariah_info}"
 
-🏷️ **السهم:** `{symbol}`
-💵 **السعر:** `${price}`
-🎯 **الإجراء:** `{action}`
-📌 **السبب:** {reason}
-{shariah_info}"""
+        sent = send_telegram_msg(msg)
+        if sent:
+            LAST_ALERT_TIME[symbol] = current_time
+            return jsonify({"status": "success", "message": "Alert sent successfully"}), 200
+        else:
+            return jsonify({"status": "error", "message": "Failed to send Telegram message"}), 500
 
-    sent = send_telegram_msg(msg)
-    if sent:
-        LAST_ALERT_TIME[symbol] = current_time
-        return jsonify({"status": "success", "message": "Alert sent successfully"}), 200
-    else:
-        return jsonify({"status": "error", "message": "Failed to send Telegram message"}), 500
-
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=scheduled_market_scan, trigger="interval", hours=1)
-if not scheduler.running:
-    scheduler.start()
+    except Exception as main_err:
+        print(f"Webhook Execution Error: {main_err}")
+        return jsonify({"status": "error", "message": str(main_err)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
