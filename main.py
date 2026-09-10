@@ -33,6 +33,10 @@ MANUAL_POSITIONS = {
     "ADXN": {"qty": 863, "avg_price": 8.85}
 }
 
+# ذاكرة مؤقتة لمنع تكرار التنبيهات لنفس السهم
+LAST_ALERT_TIME = {}
+ALERT_COOLDOWN_SECONDS = 14400  # حظر التكرار لمدة 4 ساعات لكل سهم
+
 def send_telegram_msg(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -93,44 +97,67 @@ def get_zoya_compliance(symbol):
     return None
 
 def process_webhook_alert(data):
-    """معالجة التنبيه الوارد وتطبيق الفحص الشرعي قبل الإرسال"""
+    """معالجة وتصفية التنبيهات لتقليل الرسائل وحصرها على الفرص الشرعية والقوية"""
     symbol = data.get("symbol", "").upper()
     price = data.get("price", "N/A")
     action = data.get("action", "ALERT")
-    reason = data.get("reason", "تنبيه تلقائي من TradingView")
+    reason = data.get("reason", "تنبيه تلقائي")
+    rsi = data.get("rsi")
 
     if not symbol:
         return {"status": "error", "message": "Symbol missing"}
 
-    # 1. التصفية والتأكد من الشرعية عبر Zoya
+    # 1. منع التكرار والتردد لنفس السهم خلال 4 ساعات
+    current_time = time.time()
+    if symbol in LAST_ALERT_TIME:
+        elapsed = current_time - LAST_ALERT_TIME[symbol]
+        if elapsed < ALERT_COOLDOWN_SECONDS:
+            print(f"Ignored {symbol}: Cooldown active ({int(elapsed)}s remaining)")
+            return {"status": "ignored", "reason": "Alert rate limited"}
+
+    # 2. التصفية الشرعية الصارمة عبر Zoya API
     zoya_data = get_zoya_compliance(symbol)
-    
     if zoya_data:
         is_compliant = zoya_data.get("isCompliant", False)
         status = zoya_data.get("status", "UNKNOWN")
         
-        # حجب السهم إذا كان غير متوافق شرعياً
-        if not is_compliant:
-            print(f"Ignored alert for {symbol}: Non-compliant status ({status})")
+        # حجب السهم إذا لم يكن متوافقاً 100%
+        if not is_compliant or status != "COMPLIANT":
+            print(f"Ignored {symbol}: Non-compliant or questionable status ({status})")
             return {"status": "ignored", "reason": f"Non-compliant stock ({status})"}
             
         report = zoya_data.get("report", {})
         debt_ratio = report.get("debtToMarketCapPercentage", 0) or 0
         revenue_ratio = report.get("nonPermissibleRevenuePercentage", 0) or 0
         interest_assets = report.get("interestBearingAssetsPercentage", 0) or 0
-        
-        shariah_section = f"""
+    else:
+        # حجب السهم إذا تعذر التحقق الشرعي تقليلاً للرسائل غير المضمونة
+        print(f"Ignored {symbol}: Could not verify Shariah compliance")
+        return {"status": "ignored", "reason": "Shariah status unverified"}
+
+    # 3. تصفية الفرص الضعيفة فندياً (فحص مؤشر RSI إن وجد في التنبيه)
+    if rsi is not None:
+        try:
+            rsi_val = float(rsi)
+            if action == "BUY" and rsi_val > 40:
+                print(f"Ignored {symbol}: Weak RSI ({rsi_val})")
+                return {"status": "ignored", "reason": "RSI too high for strong buy"}
+        except ValueError:
+            pass
+
+    # تحديث وقت آخر تنبيه للسهم
+    LAST_ALERT_TIME[symbol] = current_time
+
+    # 4. صياغة التقرير للفرص المعتمدة العالية الاحتمالية فقط
+    shariah_section = f"""
 ---
 🕌 **تقرير الفحص الشرعي (Zoya API - AAOIFI):**
 ✅ **الحالة الشرعية:** {status}
 📊 **نسبة الديون/القيمة السوقية:** `{debt_ratio:.2f}%` (الحد 30%)
 💰 **الإيرادات غير الحرّة:** `{revenue_ratio:.2f}%` (الحد 5%)
 🏦 **الأصول الربوية:** `{interest_assets:.2f}%` (الحد 30%)"""
-    else:
-        shariah_section = "\n---\n🕌 **تقرير الفحص الشرعي:** تعذر جلب البيانات من Zoya"
 
-    # 2. صياغة وتنسيق التقرير النهائي لتيليجرام
-    msg = f"""🚨 **تنبيه تداول جديد - تحليل فرصة**
+    msg = f"""🔥 **فرصة شرعية عالية الاحتمالية**
 
 🏷️ **السهم:** `{symbol}`
 💵 **السعر الحالي:** `${price}`
