@@ -3,46 +3,33 @@ import time
 import requests
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
 
 load_dotenv(override=False)
 
 app = Flask(__name__)
 
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
 ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
-
-WATCHLIST_SYMBOLS = [
-    "AAPL", "NVDA", "AMIX", "ADXN", "INDP", "AAL", 
-    "VALE", "BIAF", "BITF", "CLNE", "SKYE", "NAUT", "SGLY", "JOBY"
-]
 
 LAST_ALERT_TIME = {}
 ALERT_COOLDOWN_SECONDS = 14400
 
-def send_telegram_msg(message):
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    
-    masked_token = token[:8] + "..." if token else "None"
-    print(f"DEBUG: Token prefix: '{masked_token}', Chat ID: '{chat_id}'")
-    
-    if not token or not chat_id:
-        print("Telegram Config Error: TOKEN or CHAT_ID missing")
+def send_discord_msg(embed_data):
+    if not DISCORD_WEBHOOK_URL:
+        print("Discord Error: DISCORD_WEBHOOK_URL missing")
         return False
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
+        "username": "BazTech Alerts",
+        "embeds": [embed_data]
     }
     try:
-        res = requests.post(url, json=payload, timeout=10)
-        print(f"Telegram Status: {res.status_code}, Body: {res.text}")
-        return res.status_code == 200
+        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        print(f"Discord Status: {res.status_code}")
+        return res.status_code in [200, 204]
     except Exception as e:
-        print(f"Telegram Exception: {e}")
+        print(f"Discord Exception: {e}")
         return False
 
 def get_zoya_compliance(symbol):
@@ -101,8 +88,10 @@ def webhook():
             if current_time - LAST_ALERT_TIME[symbol] < ALERT_COOLDOWN_SECONDS:
                 return jsonify({"status": "ignored", "reason": "Cooldown active"}), 200
 
-        # فحص Zoya مع التجاوز الآمن في حال وجود خطأ
-        shariah_info = ""
+        # جلب بيانات Zoya
+        shariah_text = "⚠️ تعذر جلب البيانات التلقائية من Zoya"
+        color = 3447003  # الأزرق الافتراضي
+
         try:
             zoya_data = get_zoya_compliance(symbol)
             if zoya_data:
@@ -111,25 +100,37 @@ def webhook():
                 debt = report.get("debtToMarketCapPercentage") or 0.0
                 rev = report.get("nonPermissibleRevenuePercentage") or 0.0
                 
-                shariah_info = f"\n---\n🕌 **تقرير الفحص الشرعي (Zoya):**\n✅ **الحالة:** `{status}`\n📊 **نسبة الديون:** `{debt:.2f}%`\n💰 **الإيرادات غير الحرّة:** `{rev:.2f}%`"
-            else:
-                shariah_info = "\n---\n⚠️ **ملاحظة شرعية:** تعذر جلب البيانات التلقائية من Zoya."
+                if zoya_data.get("isCompliant"):
+                    color = 5763719  # أخضر
+                    shariah_text = f"✅ **الحالة:** `{status}`\n📊 **الديون:** `{debt:.2f}%`\n💰 **غير الحرّة:** `{rev:.2f}%`"
+                else:
+                    color = 15548997  # أحمر
+                    shariah_text = f"❌ **الحالة:** `{status}`\n📊 **الديون:** `{debt:.2f}%`\n💰 **غير الحرّة:** `{rev:.2f}%`"
         except Exception as z_err:
-            print(f"Safe Zoya Bypass Error: {z_err}")
-            shariah_info = "\n---\n⚠️ **ملاحظة شرعية:** تعذر جلب البيانات التلقائية من Zoya."
+            print(f"Zoya Bypass: {z_err}")
 
-        msg = f"🔥 **تنبيه فرصة تداول**\n\n🏷️ **السهم:** `{symbol}`\n💵 **السعر:** `${price}`\n🎯 **الإجراء:** `{action}`\n📌 **السبب:** {reason}{shariah_info}"
+        embed_data = {
+            "title": f"🔥 تنبيه فرصة تداول: {symbol}",
+            "color": color,
+            "fields": [
+                {"name": "السهم", "value": f"`{symbol}`", "inline": True},
+                {"name": "السعر", "value": f"`${price}`", "inline": True},
+                {"name": "الإجراء", "value": f"`{action}`", "inline": True},
+                {"name": "السبب", "value": str(reason), "inline": False},
+                {"name": "🕌 الفحص الشرعي (Zoya)", "value": shariah_text, "inline": False}
+            ]
+        }
 
-        sent = send_telegram_msg(msg)
+        sent = send_discord_msg(embed_data)
         if sent:
             LAST_ALERT_TIME[symbol] = current_time
-            return jsonify({"status": "success", "message": "Alert sent successfully"}), 200
+            return jsonify({"status": "success", "message": "Alert sent to Discord"}), 200
         else:
-            return jsonify({"status": "error", "message": "Failed to send Telegram message"}), 500
+            return jsonify({"status": "error", "message": "Failed to send to Discord"}), 500
 
-    except Exception as main_err:
-        print(f"Webhook Execution Error: {main_err}")
-        return jsonify({"status": "error", "message": str(main_err)}), 500
+    except Exception as err:
+        print(f"Webhook Execution Error: {err}")
+        return jsonify({"status": "error", "message": str(err)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
