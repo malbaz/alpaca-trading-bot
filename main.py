@@ -20,6 +20,7 @@ POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip().strip('"')
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 # متغيرات Zoya API
 ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
@@ -206,6 +207,20 @@ def check_portfolio_compliance():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json or {}
+    
+    # 1. التحقق من كلمة المرور (سواء أُرسلت في الهيدر أو في نص JSON)
+    incoming_secret = (
+        request.headers.get("X-Webhook-Secret") or 
+        request.headers.get("X-Passphrase") or 
+        data.get("passphrase") or 
+        data.get("secret")
+    )
+
+    if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+        print("Unauthorized webhook request: Invalid or missing passphrase")
+        return jsonify({"status": "error", "message": "Unauthorized: Invalid passphrase"}), 401
+
+    # 2. معالجة التنبيه عند صحة السر
     res = process_webhook_alert(data)
     return jsonify(res), 200
 
