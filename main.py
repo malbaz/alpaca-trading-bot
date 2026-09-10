@@ -4,11 +4,14 @@ import time
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from flask import Flask, request, jsonify
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
 
 load_dotenv(override=True)
+
+app = Flask(__name__)
 
 # المتغيرات الأساسية للمشروع
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
@@ -137,3 +140,52 @@ def process_webhook_alert(data):
 
     send_telegram_msg(msg)
     return {"status": "success"}
+
+def check_portfolio_compliance():
+    """فحص دوري لجميع الأسهم المملوكة في المحفظة وإرسال تحذير على تيليجرام عند تغير الحالة"""
+    if not MANUAL_POSITIONS:
+        return {"status": "success", "message": "المحفظة فارغة"}
+
+    alerts = []
+    
+    for symbol in MANUAL_POSITIONS.keys():
+        zoya_data = get_zoya_compliance(symbol)
+        if zoya_data:
+            is_compliant = zoya_data.get("isCompliant", False)
+            status = zoya_data.get("status", "UNKNOWN")
+            
+            if not is_compliant or status != "COMPLIANT":
+                report = zoya_data.get("report", {})
+                debt_ratio = report.get("debtToMarketCapPercentage", 0) or 0
+                revenue_ratio = report.get("nonPermissibleRevenuePercentage", 0) or 0
+                
+                alert_msg = f"""⚠️ **تنبيه طارئ: تغير الحالة الشرعية لسهم مملوك!**
+
+🏷️ **السهم:** `{symbol}`
+📊 **الحالة الجديدة:** `{status}`
+📉 **تفاصيل النسب:**
+  • نسبة الديون: `{debt_ratio:.2f}%`
+  • الإيرادات غير الحرّة: `{revenue_ratio:.2f}%`
+
+‼️ **توصية:** يرجى مراجعة وضع السهم لاتخاذ قرار التصفية أو الخروج.
+"""
+                send_telegram_msg(alert_msg)
+                alerts.append(symbol)
+
+    if alerts:
+        return {"status": "warning", "non_compliant_stocks": alerts}
+    return {"status": "success", "message": "جميع أسهم المحفظة متوافقة شرعياً"}
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json or {}
+    res = process_webhook_alert(data)
+    return jsonify(res), 200
+
+@app.route('/check-compliance', methods=['GET', 'POST'])
+def run_compliance_check():
+    result = check_portfolio_compliance()
+    return jsonify(result), 200
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
