@@ -5,12 +5,11 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
-load_dotenv(override=True)
+# تحميل البيئة بدون تجاوز متغيرات Render
+load_dotenv(override=False)
 
 app = Flask(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
 ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
@@ -26,8 +25,12 @@ def send_telegram_msg(message):
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     
+    # طباعة جزء من التوكن للتأكد من قيمته الحقيقية في السجلات
+    masked_token = token[:8] + "..." if token else "None"
+    print(f"DEBUG: Executing with Token prefix: '{masked_token}', Chat ID: '{chat_id}'")
+    
     if not token or not chat_id:
-        print(f"Telegram Config Error: TOKEN present={bool(token)}, CHAT_ID present={bool(chat_id)}")
+        print("Telegram Config Error: TOKEN or CHAT_ID missing")
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
