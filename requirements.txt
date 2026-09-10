@@ -1,5 +1,6 @@
+flask
+gunicorn
 requests
 python-dotenv
 alpaca-py
-flask
-gunicorn
+APScheduler
