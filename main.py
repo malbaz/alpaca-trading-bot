@@ -152,10 +152,11 @@ def webhook():
 
     return jsonify({"status": "success", "message": "Alert processed and sent to Telegram"}), 200
 
-# تشغيل المجدول الدوري (مرة كل ساعة)
+# بدء تشغيل المجدول تلقائياً مع التطبيق
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=scheduled_market_scan, trigger="interval", hours=1)
-scheduler.start()
+if not scheduler.running:
+    scheduler.start()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
