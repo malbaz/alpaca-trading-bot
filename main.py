@@ -15,25 +15,22 @@ ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 LAST_ALERT_TIME = {}
 ALERT_COOLDOWN_SECONDS = 14400
 
-def send_discord_msg(content_text):
-    if not DISCORD_WEBHOOK_URL:
-        print("Discord Error: DISCORD_WEBHOOK_URL missing")
+def send_discord_msg(message_text):
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    if not webhook_url:
+        print("CRITICAL: DISCORD_WEBHOOK_URL is empty or not set!")
         return False
 
-    payload = {
-        "content": content_text
-    }
-    
+    payload = {"content": message_text}
     headers = {"Content-Type": "application/json"}
-    
+
     try:
-        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers, timeout=10)
-        print(f"Discord Response Status: {res.status_code}")
-        if res.status_code not in [200, 204]:
-            print(f"Discord Raw Response: {res.text}")
+        res = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
+        print(f"Discord Response Code: {res.status_code}")
+        print(f"Discord Response Body: {res.text}")
         return res.status_code in [200, 204]
     except Exception as e:
-        print(f"Discord Exception: {e}")
+        print(f"Discord Request Exception: {e}")
         return False
 
 def get_zoya_compliance(symbol):
