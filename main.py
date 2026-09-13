@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+from urllib.parse import unquote
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 
@@ -15,33 +16,32 @@ LAST_ALERT_TIME = {}
 ALERT_COOLDOWN_SECONDS = 14400
 
 def send_discord_msg(message_text):
-    # قراءة الرابط مباشرة من Render Environment
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    raw_url = os.getenv("DISCORD_WEBHOOK_URL", "")
+    webhook_url = unquote(raw_url).strip().replace("\n", "").replace("\r", "")
     
-    if not webhook_url:
-        print("Error: DISCORD_WEBHOOK_URL is not set!")
+    if not webhook_url or not webhook_url.startswith("http"):
+        print(f"Error: Invalid DISCORD_WEBHOOK_URL: '{webhook_url}'")
         return False
 
     payload = {"content": message_text}
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
     try:
         res = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
-        print(f"Discord Response Status: {res.status_code}")
+        print(f"Discord Response Code: {res.status_code}")
         if res.status_code not in [200, 204]:
-            print(f"Discord Raw Body: {res.text}")
+            print(f"Discord Response Text: {res.text}")
         return res.status_code in [200, 204]
     except Exception as e:
-        print(f"Discord Exception: {e}")
+        print(f"Discord Request Exception: {e}")
         return False
 
 def get_zoya_compliance(symbol):
     if not ZOYA_API_KEY:
         return None
-    
     headers = {
         "Authorization": f"Bearer {ZOYA_API_KEY}",
         "Content-Type": "application/json"
@@ -64,13 +64,12 @@ def get_zoya_compliance(symbol):
     """
     payload = {"query": query, "variables": {"symbol": str(symbol).upper()}}
     try:
-        res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=10)
+        res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            if "errors" not in data:
-                return data.get("data", {}).get("security", {}).get("compliance", {})
-    except Exception as e:
-        print(f"Zoya Error ({symbol}): {e}")
+            return data.get("data", {}).get("security", {}).get("compliance", {})
+    except Exception:
+        pass
     return None
 
 @app.route('/', methods=['GET'])
@@ -96,21 +95,20 @@ def webhook():
 
         shariah_text = "ℹ️ فحص الشرعية غير متاح"
 
-        if ZOYA_API_KEY:
-            try:
-                zoya_data = get_zoya_compliance(symbol)
-                if zoya_data:
-                    status = str(zoya_data.get("status", "UNKNOWN"))
-                    report = zoya_data.get("report") or {}
-                    debt = float(report.get("debtToMarketCapPercentage") or 0.0)
-                    rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
-                    
-                    if zoya_data.get("isCompliant"):
-                        shariah_text = f"✅ **متوافق:** `{status}` | 📊 **الديون:** `{debt:.2f}%` | 💰 **غير المباح:** `{rev:.2f}%`"
-                    else:
-                        shariah_text = f"❌ **غير متوافق:** `{status}` | 📊 **الديون:** `{debt:.2f}%` | 💰 **غير المباح:** `{rev:.2f}%`"
-            except Exception as z_err:
-                print(f"Zoya Bypass: {z_err}")
+        try:
+            zoya_data = get_zoya_compliance(symbol)
+            if zoya_data:
+                status = str(zoya_data.get("status", "UNKNOWN"))
+                report = zoya_data.get("report") or {}
+                debt = float(report.get("debtToMarketCapPercentage") or 0.0)
+                rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
+                
+                if zoya_data.get("isCompliant"):
+                    shariah_text = f"✅ **متوافق:** `{status}` | 📊 **الديون:** `{debt:.2f}%` | 💰 **غير المباح:** `{rev:.2f}%`"
+                else:
+                    shariah_text = f"❌ **غير متوافق:** `{status}` | 📊 **الديون:** `{debt:.2f}%` | 💰 **غير المباح:** `{rev:.2f}%`"
+        except Exception:
+            pass
 
         message_text = (
             f"🔥 **تنبيه فرصة تداول: {symbol}**\n"
@@ -129,7 +127,6 @@ def webhook():
             return jsonify({"status": "error", "message": "Failed to send to Discord"}), 500
 
     except Exception as err:
-        print(f"Server Error: {err}")
         return jsonify({"status": "error", "message": str(err)}), 500
 
 if __name__ == '__main__':
