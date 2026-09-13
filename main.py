@@ -13,12 +13,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
 ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
-LAST_ALERT_TIME = {}
-ALERT_COOLDOWN_SECONDS = 14400
-
 def send_telegram_msg(message_text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram configuration missing!")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -29,12 +25,8 @@ def send_telegram_msg(message_text):
 
     try:
         res = requests.post(url, json=payload, timeout=10)
-        print(f"Telegram Response Status: {res.status_code}")
-        if res.status_code != 200:
-            print(f"Telegram Raw Body: {res.text}")
         return res.status_code == 200
-    except Exception as e:
-        print(f"Telegram Exception: {e}")
+    except Exception:
         return False
 
 def get_zoya_compliance(symbol):
@@ -66,8 +58,8 @@ def get_zoya_compliance(symbol):
         if res.status_code == 200:
             data = res.json()
             return data.get("data", {}).get("security", {}).get("compliance", {})
-    except Exception as e:
-        print(f"Zoya Exception: {e}")
+    except Exception:
+        pass
     return None
 
 @app.route('/', methods=['GET'])
@@ -79,21 +71,20 @@ def webhook():
     try:
         data = request.get_json(force=True, silent=True) or {}
         
-        # تنظيف اسم السهم واستخراجه في حال إرساله بصيغة NASDAQ:AMIX
-        raw_symbol = str(data.get("symbol", "")).strip().upper()
-        symbol = raw_symbol.split(":")[-1] if ":" in raw_symbol else raw_symbol
+        # التنظيف الذكي لرمز السهم من كافة الصيغ (ticker / stock / exchange:symbol)
+        raw_symbol = str(data.get("symbol", "") or data.get("ticker", "")).strip().upper()
+        
+        if ":" in raw_symbol:
+            symbol = raw_symbol.split(":")[-1]
+        else:
+            symbol = raw_symbol
 
         price = str(data.get("price", "N/A")).strip()
         action = str(data.get("action", "ALERT")).strip()
         reason = str(data.get("reason", "تنبيه تلقائي")).strip()
 
-        if not symbol:
-            return jsonify({"status": "error", "message": "Symbol missing"}), 400
-
-        current_time = time.time()
-        if symbol in LAST_ALERT_TIME:
-            if current_time - LAST_ALERT_TIME[symbol] < ALERT_COOLDOWN_SECONDS:
-                return jsonify({"status": "ignored", "reason": "Cooldown active"}), 200
+        if not symbol or symbol == "UNDEFINED":
+            return jsonify({"status": "error", "message": "Invalid or missing symbol"}), 400
 
         shariah_text = "فحص الشرعية غير متاح"
 
@@ -109,8 +100,8 @@ def webhook():
                     shariah_text = f"متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
                 else:
                     shariah_text = f"غير متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
-        except Exception as z_err:
-            print(f"Zoya Processing Error: {z_err}")
+        except Exception:
+            pass
 
         message_text = (
             f"تنبيه فرصة تداول: {symbol}\n"
@@ -123,13 +114,11 @@ def webhook():
 
         sent = send_telegram_msg(message_text)
         if sent:
-            LAST_ALERT_TIME[symbol] = current_time
             return jsonify({"status": "success", "message": "Alert sent to Telegram"}), 200
         else:
             return jsonify({"status": "error", "message": "Failed to send to Telegram"}), 500
 
     except Exception as err:
-        print(f"Webhook Error: {err}")
         return jsonify({"status": "error", "message": str(err)}), 500
 
 if __name__ == '__main__':
