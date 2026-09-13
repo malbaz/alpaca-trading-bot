@@ -17,16 +17,21 @@ ALERT_COOLDOWN_SECONDS = 14400
 
 def send_discord_msg(embed_data):
     if not DISCORD_WEBHOOK_URL:
-        print("Discord Error: DISCORD_WEBHOOK_URL missing")
+        print("Discord Error: DISCORD_WEBHOOK_URL is missing")
         return False
 
     payload = {
         "username": "BazTech Alerts",
         "embeds": [embed_data]
     }
+    
+    headers = {"Content-Type": "application/json"}
+    
     try:
-        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        print(f"Discord Status Code: {res.status_code}")
+        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers, timeout=10)
+        print(f"Discord Response Code: {res.status_code}")
+        if res.status_code not in [200, 204]:
+            print(f"Discord Error Response: {res.text}")
         return res.status_code in [200, 204]
     except Exception as e:
         print(f"Discord Exception: {e}")
@@ -56,7 +61,7 @@ def get_zoya_compliance(symbol):
       }
     }
     """
-    payload = {"query": query, "variables": {"symbol": symbol.upper()}}
+    payload = {"query": query, "variables": {"symbol": str(symbol).upper()}}
     try:
         res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=10)
         if res.status_code == 200:
@@ -75,10 +80,10 @@ def home():
 def webhook():
     try:
         data = request.get_json(force=True, silent=True) or {}
-        symbol = str(data.get("symbol", "")).upper()
-        price = str(data.get("price", "N/A"))
-        action = str(data.get("action", "ALERT"))
-        reason = str(data.get("reason", "تنبيه تلقائي"))
+        symbol = str(data.get("symbol", "")).strip().upper()
+        price = str(data.get("price", "N/A")).strip()
+        action = str(data.get("action", "ALERT")).strip()
+        reason = str(data.get("reason", "تنبيه تلقائي")).strip()
 
         if not symbol:
             return jsonify({"status": "error", "message": "Symbol missing"}), 400
@@ -95,10 +100,10 @@ def webhook():
             try:
                 zoya_data = get_zoya_compliance(symbol)
                 if zoya_data:
-                    status = zoya_data.get("status", "UNKNOWN")
+                    status = str(zoya_data.get("status", "UNKNOWN"))
                     report = zoya_data.get("report") or {}
-                    debt = report.get("debtToMarketCapPercentage") or 0.0
-                    rev = report.get("nonPermissibleRevenuePercentage") or 0.0
+                    debt = float(report.get("debtToMarketCapPercentage") or 0.0)
+                    rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
                     
                     if zoya_data.get("isCompliant"):
                         color = 5763719
@@ -116,7 +121,7 @@ def webhook():
                 {"name": "السهم", "value": f"`{symbol}`", "inline": True},
                 {"name": "السعر", "value": f"`${price}`", "inline": True},
                 {"name": "الإجراء", "value": f"`{action}`", "inline": True},
-                {"name": "السبب", "value": reason, "inline": False},
+                {"name": "السبب", "value": reason if reason else "تنبيه جديد", "inline": False},
                 {"name": "🕌 الفحص الشرعي", "value": shariah_text, "inline": False}
             ]
         }
