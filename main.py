@@ -26,7 +26,7 @@ def send_discord_msg(embed_data):
     }
     try:
         res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        print(f"Discord Status: {res.status_code}")
+        print(f"Discord Status Code: {res.status_code}")
         return res.status_code in [200, 204]
     except Exception as e:
         print(f"Discord Exception: {e}")
@@ -74,11 +74,11 @@ def home():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        data = request.json or {}
-        symbol = data.get("symbol", "").upper()
-        price = data.get("price", "N/A")
-        action = data.get("action", "ALERT")
-        reason = data.get("reason", "تنبيه تلقائي")
+        data = request.get_json(force=True, silent=True) or {}
+        symbol = str(data.get("symbol", "")).upper()
+        price = str(data.get("price", "N/A"))
+        action = str(data.get("action", "ALERT"))
+        reason = str(data.get("reason", "تنبيه تلقائي"))
 
         if not symbol:
             return jsonify({"status": "error", "message": "Symbol missing"}), 400
@@ -88,26 +88,26 @@ def webhook():
             if current_time - LAST_ALERT_TIME[symbol] < ALERT_COOLDOWN_SECONDS:
                 return jsonify({"status": "ignored", "reason": "Cooldown active"}), 200
 
-        # جلب بيانات Zoya
-        shariah_text = "⚠️ تعذر جلب البيانات التلقائية من Zoya"
-        color = 3447003  # الأزرق الافتراضي
+        shariah_text = "ℹ️ فحص الشرعية غير متاح"
+        color = 3447003
 
-        try:
-            zoya_data = get_zoya_compliance(symbol)
-            if zoya_data:
-                status = zoya_data.get("status", "UNKNOWN")
-                report = zoya_data.get("report") or {}
-                debt = report.get("debtToMarketCapPercentage") or 0.0
-                rev = report.get("nonPermissibleRevenuePercentage") or 0.0
-                
-                if zoya_data.get("isCompliant"):
-                    color = 5763719  # أخضر
-                    shariah_text = f"✅ **الحالة:** `{status}`\n📊 **الديون:** `{debt:.2f}%`\n💰 **غير الحرّة:** `{rev:.2f}%`"
-                else:
-                    color = 15548997  # أحمر
-                    shariah_text = f"❌ **الحالة:** `{status}`\n📊 **الديون:** `{debt:.2f}%`\n💰 **غير الحرّة:** `{rev:.2f}%`"
-        except Exception as z_err:
-            print(f"Zoya Bypass: {z_err}")
+        if ZOYA_API_KEY:
+            try:
+                zoya_data = get_zoya_compliance(symbol)
+                if zoya_data:
+                    status = zoya_data.get("status", "UNKNOWN")
+                    report = zoya_data.get("report") or {}
+                    debt = report.get("debtToMarketCapPercentage") or 0.0
+                    rev = report.get("nonPermissibleRevenuePercentage") or 0.0
+                    
+                    if zoya_data.get("isCompliant"):
+                        color = 5763719
+                        shariah_text = f"✅ **متوافق:** `{status}`\n📊 **الديون:** `{debt:.2f}%`\n💰 **الإيراد غير المباح:** `{rev:.2f}%`"
+                    else:
+                        color = 15548997
+                        shariah_text = f"❌ **غير متوافق:** `{status}`\n📊 **الديون:** `{debt:.2f}%`\n💰 **الإيراد غير المباح:** `{rev:.2f}%`"
+            except Exception as z_err:
+                print(f"Zoya Bypass: {z_err}")
 
         embed_data = {
             "title": f"🔥 تنبيه فرصة تداول: {symbol}",
@@ -116,8 +116,8 @@ def webhook():
                 {"name": "السهم", "value": f"`{symbol}`", "inline": True},
                 {"name": "السعر", "value": f"`${price}`", "inline": True},
                 {"name": "الإجراء", "value": f"`{action}`", "inline": True},
-                {"name": "السبب", "value": str(reason), "inline": False},
-                {"name": "🕌 الفحص الشرعي (Zoya)", "value": shariah_text, "inline": False}
+                {"name": "السبب", "value": reason, "inline": False},
+                {"name": "🕌 الفحص الشرعي", "value": shariah_text, "inline": False}
             ]
         }
 
@@ -129,7 +129,7 @@ def webhook():
             return jsonify({"status": "error", "message": "Failed to send to Discord"}), 500
 
     except Exception as err:
-        print(f"Webhook Execution Error: {err}")
+        print(f"Server Error: {err}")
         return jsonify({"status": "error", "message": str(err)}), 500
 
 if __name__ == '__main__':
