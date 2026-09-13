@@ -20,7 +20,8 @@ def send_telegram_msg(message_text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": message_text
+        "text": message_text,
+        "parse_mode": "HTML"
     }
 
     try:
@@ -69,7 +70,6 @@ def home():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        # قراءة البيانات بأي شكل يرسله TradingView
         raw_data = request.get_data(as_text=True)
         data = {}
 
@@ -78,7 +78,6 @@ def webhook():
         except Exception:
             data = request.get_json(force=True, silent=True) or {}
 
-        # استخراج اسم السهم
         raw_symbol = str(data.get("symbol", "") or data.get("ticker", "") or "").strip().upper()
         
         if ":" in raw_symbol:
@@ -87,10 +86,11 @@ def webhook():
             symbol = raw_symbol
 
         price = str(data.get("price", "N/A")).strip()
-        action = str(data.get("action", "ALERT")).strip()
+        action = str(data.get("action", "ALERT")).strip().upper()
         reason = str(data.get("reason", "تنبيه تلقائي")).strip()
+        interval = str(data.get("interval", "غير محدد")).strip()
+        volume = str(data.get("volume", "N/A")).strip()
 
-        # إذا لم يتم استخراج سهم محدد، استخرج النص كاملاً
         if not symbol:
             symbol = "تنبيه عام"
             reason = raw_data if raw_data else "تنبيه بدون بيانات"
@@ -107,19 +107,23 @@ def webhook():
                     rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
                     
                     if zoya_data.get("isCompliant"):
-                        shariah_text = f"متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
+                        shariah_text = f"✅ <b>متوافق</b> ({status})\n   • الديون: {debt:.2f}%\n   • غير المباح: {rev:.2f}%"
                     else:
-                        shariah_text = f"غير متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
+                        shariah_text = f"❌ <b>غير متوافق</b> ({status})\n   • الديون: {debt:.2f}%\n   • غير المباح: {rev:.2f}%"
             except Exception:
                 pass
 
+        action_emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "🔵"
+
         message_text = (
-            f"تنبيه فرصة تداول: {symbol}\n"
-            f"• السهم: {symbol}\n"
-            f"• السعر: ${price}\n"
-            f"• الإجراء: {action}\n"
-            f"• السبب: {reason}\n"
-            f"• الفحص الشرعي: {shariah_text}"
+            f"<b>{action_emoji} تنبيه فرصة تداول: {symbol}</b>\n\n"
+            f"📌 <b>السهم:</b> <code>{symbol}</code>\n"
+            f"💰 <b>السعر الحالي:</b> ${price}\n"
+            f"⚡ <b>نوع الإشارة:</b> {action}\n"
+            f"⏱️ <b>الفريم الزمني:</b> {interval}\n"
+            f"📊 <b>حجم التداول:</b> {volume}\n"
+            f"📝 <b>السبب:</b> {reason}\n\n"
+            f"⚖️ <b>الوضع الشرعي (Zoya):</b>\n{shariah_text}"
         )
 
         sent = send_telegram_msg(message_text)
