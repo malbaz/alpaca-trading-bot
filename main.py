@@ -15,23 +15,22 @@ ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 LAST_ALERT_TIME = {}
 ALERT_COOLDOWN_SECONDS = 14400
 
-def send_discord_msg(embed_data):
+def send_discord_msg(content_text):
     if not DISCORD_WEBHOOK_URL:
-        print("Discord Error: DISCORD_WEBHOOK_URL is missing")
+        print("Discord Error: DISCORD_WEBHOOK_URL missing")
         return False
 
     payload = {
-        "username": "BazTech Alerts",
-        "embeds": [embed_data]
+        "content": content_text
     }
     
     headers = {"Content-Type": "application/json"}
     
     try:
         res = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers, timeout=10)
-        print(f"Discord Response Code: {res.status_code}")
+        print(f"Discord Response Status: {res.status_code}")
         if res.status_code not in [200, 204]:
-            print(f"Discord Error Response: {res.text}")
+            print(f"Discord Raw Response: {res.text}")
         return res.status_code in [200, 204]
     except Exception as e:
         print(f"Discord Exception: {e}")
@@ -94,7 +93,6 @@ def webhook():
                 return jsonify({"status": "ignored", "reason": "Cooldown active"}), 200
 
         shariah_text = "ℹ️ فحص الشرعية غير متاح"
-        color = 3447003
 
         if ZOYA_API_KEY:
             try:
@@ -106,27 +104,22 @@ def webhook():
                     rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
                     
                     if zoya_data.get("isCompliant"):
-                        color = 5763719
-                        shariah_text = f"✅ **متوافق:** `{status}`\n📊 **الديون:** `{debt:.2f}%`\n💰 **الإيراد غير المباح:** `{rev:.2f}%`"
+                        shariah_text = f"✅ **متوافق:** `{status}` | 📊 **الديون:** `{debt:.2f}%` | 💰 **غير المباح:** `{rev:.2f}%`"
                     else:
-                        color = 15548997
-                        shariah_text = f"❌ **غير متوافق:** `{status}`\n📊 **الديون:** `{debt:.2f}%`\n💰 **الإيراد غير المباح:** `{rev:.2f}%`"
+                        shariah_text = f"❌ **غير متوافق:** `{status}` | 📊 **الديون:** `{debt:.2f}%` | 💰 **غير المباح:** `{rev:.2f}%`"
             except Exception as z_err:
                 print(f"Zoya Bypass: {z_err}")
 
-        embed_data = {
-            "title": f"🔥 تنبيه فرصة تداول: {symbol}",
-            "color": color,
-            "fields": [
-                {"name": "السهم", "value": f"`{symbol}`", "inline": True},
-                {"name": "السعر", "value": f"`${price}`", "inline": True},
-                {"name": "الإجراء", "value": f"`{action}`", "inline": True},
-                {"name": "السبب", "value": reason if reason else "تنبيه جديد", "inline": False},
-                {"name": "🕌 الفحص الشرعي", "value": shariah_text, "inline": False}
-            ]
-        }
+        message_text = (
+            f"🔥 **تنبيه فرصة تداول: {symbol}**\n"
+            f"• **السهم:** `{symbol}`\n"
+            f"• **السعر:** `${price}`\n"
+            f"• **الإجراء:** `{action}`\n"
+            f"• **السبب:** {reason}\n"
+            f"• **الفحص الشرعي:** {shariah_text}"
+        )
 
-        sent = send_discord_msg(embed_data)
+        sent = send_discord_msg(message_text)
         if sent:
             LAST_ALERT_TIME[symbol] = current_time
             return jsonify({"status": "success", "message": "Alert sent to Discord"}), 200
