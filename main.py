@@ -1,5 +1,5 @@
 import os
-import time
+import json
 import requests
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -69,10 +69,17 @@ def home():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        data = request.get_json(force=True, silent=True) or {}
-        
-        # التنظيف الذكي لرمز السهم من كافة الصيغ (ticker / stock / exchange:symbol)
-        raw_symbol = str(data.get("symbol", "") or data.get("ticker", "")).strip().upper()
+        # قراءة البيانات بأي شكل يرسله TradingView
+        raw_data = request.get_data(as_text=True)
+        data = {}
+
+        try:
+            data = json.loads(raw_data)
+        except Exception:
+            data = request.get_json(force=True, silent=True) or {}
+
+        # استخراج اسم السهم
+        raw_symbol = str(data.get("symbol", "") or data.get("ticker", "") or "").strip().upper()
         
         if ":" in raw_symbol:
             symbol = raw_symbol.split(":")[-1]
@@ -83,25 +90,28 @@ def webhook():
         action = str(data.get("action", "ALERT")).strip()
         reason = str(data.get("reason", "تنبيه تلقائي")).strip()
 
-        if not symbol or symbol == "UNDEFINED":
-            return jsonify({"status": "error", "message": "Invalid or missing symbol"}), 400
+        # إذا لم يتم استخراج سهم محدد، استخرج النص كاملاً
+        if not symbol:
+            symbol = "تنبيه عام"
+            reason = raw_data if raw_data else "تنبيه بدون بيانات"
 
         shariah_text = "فحص الشرعية غير متاح"
 
-        try:
-            zoya_data = get_zoya_compliance(symbol)
-            if zoya_data:
-                status = str(zoya_data.get("status", "UNKNOWN"))
-                report = zoya_data.get("report") or {}
-                debt = float(report.get("debtToMarketCapPercentage") or 0.0)
-                rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
-                
-                if zoya_data.get("isCompliant"):
-                    shariah_text = f"متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
-                else:
-                    shariah_text = f"غير متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
-        except Exception:
-            pass
+        if symbol != "تنبيه عام":
+            try:
+                zoya_data = get_zoya_compliance(symbol)
+                if zoya_data:
+                    status = str(zoya_data.get("status", "UNKNOWN"))
+                    report = zoya_data.get("report") or {}
+                    debt = float(report.get("debtToMarketCapPercentage") or 0.0)
+                    rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
+                    
+                    if zoya_data.get("isCompliant"):
+                        shariah_text = f"متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
+                    else:
+                        shariah_text = f"غير متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
+            except Exception:
+                pass
 
         message_text = (
             f"تنبيه فرصة تداول: {symbol}\n"
