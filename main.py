@@ -66,8 +66,8 @@ def get_zoya_compliance(symbol):
         if res.status_code == 200:
             data = res.json()
             return data.get("data", {}).get("security", {}).get("compliance", {})
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Zoya Exception: {e}")
     return None
 
 @app.route('/', methods=['GET'])
@@ -78,7 +78,11 @@ def home():
 def webhook():
     try:
         data = request.get_json(force=True, silent=True) or {}
-        symbol = str(data.get("symbol", "")).strip().upper()
+        
+        # تنظيف اسم السهم واستخراجه في حال إرساله بصيغة NASDAQ:AMIX
+        raw_symbol = str(data.get("symbol", "")).strip().upper()
+        symbol = raw_symbol.split(":")[-1] if ":" in raw_symbol else raw_symbol
+
         price = str(data.get("price", "N/A")).strip()
         action = str(data.get("action", "ALERT")).strip()
         reason = str(data.get("reason", "تنبيه تلقائي")).strip()
@@ -105,8 +109,8 @@ def webhook():
                     shariah_text = f"متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
                 else:
                     shariah_text = f"غير متوافق: {status} | الديون: {debt:.2f}% | غير المباح: {rev:.2f}%"
-        except Exception:
-            pass
+        except Exception as z_err:
+            print(f"Zoya Processing Error: {z_err}")
 
         message_text = (
             f"تنبيه فرصة تداول: {symbol}\n"
@@ -125,6 +129,7 @@ def webhook():
             return jsonify({"status": "error", "message": "Failed to send to Telegram"}), 500
 
     except Exception as err:
+        print(f"Webhook Error: {err}")
         return jsonify({"status": "error", "message": str(err)}), 500
 
 if __name__ == '__main__':
