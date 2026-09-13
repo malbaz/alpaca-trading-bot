@@ -8,9 +8,6 @@ load_dotenv(override=False)
 
 app = Flask(__name__)
 
-# رابط مباشر احتياطي لضمان عدم توقف الخدمة في حال عدم قراءة متغيرات البيئة
-DEFAULT_DISCORD_URL = "https://discord.com/api/webhooks/1547590696431784041/J0aD7LtmooLs8sbjchnQtHZK7dM2UTTQ0By4wW1g_SQp9IFYCyvItUx7iaaP0kTXgllo"
-
 ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
 ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
@@ -18,13 +15,14 @@ LAST_ALERT_TIME = {}
 ALERT_COOLDOWN_SECONDS = 14400
 
 def send_discord_msg(message_text):
+    # قراءة الرابط مباشرة من Render Environment
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    
     if not webhook_url:
-        webhook_url = DEFAULT_DISCORD_URL
+        print("Error: DISCORD_WEBHOOK_URL is not set!")
+        return False
 
     payload = {"content": message_text}
-    
-    # ترويسة متصفح حقيقي لتجاوز حظر Cloudflare ورمز 429
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -33,6 +31,8 @@ def send_discord_msg(message_text):
     try:
         res = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
         print(f"Discord Response Status: {res.status_code}")
+        if res.status_code not in [200, 204]:
+            print(f"Discord Raw Body: {res.text}")
         return res.status_code in [200, 204]
     except Exception as e:
         print(f"Discord Exception: {e}")
