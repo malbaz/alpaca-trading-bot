@@ -8,7 +8,7 @@ load_dotenv(override=False)
 
 app = Flask(__name__)
 
-# رابط احتياطي مباشر لمنع فشل المتغيرات على Render
+# رابط مباشر احتياطي لضمان عدم توقف الخدمة في حال عدم قراءة متغيرات البيئة
 DEFAULT_DISCORD_URL = "https://discord.com/api/webhooks/1547590696431784041/J0aD7LtmooLs8sbjchnQtHZK7dM2UTTQ0By4wW1g_SQp9IFYCyvItUx7iaaP0kTXgllo"
 
 ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
@@ -18,14 +18,13 @@ LAST_ALERT_TIME = {}
 ALERT_COOLDOWN_SECONDS = 14400
 
 def send_discord_msg(message_text):
-    # قراءة المتغير وإذا كان فارغاً يتم استخدام الرابط الاحتياطي المباشر
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook_url:
         webhook_url = DEFAULT_DISCORD_URL
 
     payload = {"content": message_text}
     
-    # إضافة User-Agent لمنع حظر 429 من Cloudflare
+    # ترويسة متصفح حقيقي لتجاوز حظر Cloudflare ورمز 429
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
