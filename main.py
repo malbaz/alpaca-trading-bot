@@ -15,10 +15,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # مفتاح Zoya المباشر (Live) للاختبار الإجباري
 ZOYA_API_KEY = "live-0267000b-e0d0-4ae0-9895-63dc1ec1d44a"
-ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
 def send_telegram_msg(message_text):
-    """إرسال رسالة تنسيق HTML إلى تلغرام"""
+    """إرسال رسالة بتنسيق HTML إلى تلغرام"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[Warning] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing.")
         return False
@@ -42,48 +41,25 @@ def send_telegram_msg(message_text):
         return False
 
 def get_zoya_compliance(symbol):
-    """فحص الفلترة الشرعية للسهم عبر Zoya GraphQL API"""
+    """فحص الفلترة الشرعية للسهم عبر Zoya REST API"""
     if not ZOYA_API_KEY:
         return None
     
     headers = {
-        "Authorization": f"Bearer {ZOYA_API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {ZOYA_API_KEY}"
     }
     
-    # استعلام GraphQL مطابق لهيكل Zoya API
-    query = """
-    query GetCompliance($symbol: String!) {
-      security(symbol: $symbol) {
-        ticker
-        name
-        compliance {
-          status
-          isCompliant
-          report {
-            nonPermissibleRevenuePercentage
-            debtToMarketCapPercentage
-          }
-        }
-      }
-    }
-    """
-    
-    payload = {
-        "query": query,
-        "variables": {"symbol": str(symbol).upper()}
-    }
+    # رابط REST المباشر المتوافق مع خطط Zoya Developer
+    url = f"https://api.zoya.finance/v1/compliance?symbol={str(symbol).upper()}"
     
     try:
-        res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=5)
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            sec = data.get("data", {}).get("security")
-            if sec and "compliance" in sec:
-                return sec.get("compliance")
-        print(f"[Zoya Log] Status: {res.status_code}, Response: {res.text}")
+            return data.get("compliance") or data
+        print(f"[Zoya REST Log] Status: {res.status_code}, Response: {res.text}")
     except Exception as e:
-        print(f"[Exception] Zoya API Query Failed: {e}")
+        print(f"[Exception] Zoya REST API Query Failed: {e}")
     return None
 
 def process_alert_data(data, raw_data=""):
@@ -113,10 +89,11 @@ def process_alert_data(data, raw_data=""):
             if zoya_data:
                 status = str(zoya_data.get("status", "UNKNOWN"))
                 report = zoya_data.get("report") or {}
-                debt = float(report.get("debtToMarketCapPercentage") or 0.0)
-                rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
+                debt = float(report.get("debtToMarketCapPercentage") or zoya_data.get("debt_ratio") or 0.0)
+                rev = float(report.get("nonPermissibleRevenuePercentage") or zoya_data.get("impermissible_revenue_ratio") or 0.0)
+                is_compliant = zoya_data.get("isCompliant") or zoya_data.get("is_compliant")
 
-                if zoya_data.get("isCompliant"):
+                if is_compliant:
                     shariah_text = f"✅ متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
                 else:
                     shariah_text = f"❌ غير متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
