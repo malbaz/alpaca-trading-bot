@@ -5,6 +5,7 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 
+# تحميل متغيرات البيئة
 load_dotenv(override=False)
 
 app = Flask(__name__)
@@ -14,9 +15,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # مفتاح Zoya المباشر
 ZOYA_API_KEY = "live-0267000b-e0d0-4ae0-9895-63dc1ec1d44a"
-ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
 def send_telegram_msg(message_text):
+    """إرسال رسالة بتنسيق HTML إلى تلغرام"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[Warning] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing.")
         return False
@@ -36,56 +37,54 @@ def send_telegram_msg(message_text):
         return False
 
 def get_zoya_compliance(symbol):
-    """فحص الفلترة الشرعية عبر GraphQL المتوافق مع خطة Basic Data"""
+    """فحص الفلترة الشرعية بإنعكاس ترويسات Authorization القياسية لـ Zoya"""
     if not ZOYA_API_KEY:
         return "المفتاح غير مدخل"
     
+    # الترويسات المزدوجة لتفادي أخطاء الصلاحية (401)
     headers = {
+        "X-API-KEY": ZOYA_API_KEY,
         "Authorization": f"Bearer {ZOYA_API_KEY}",
         "Content-Type": "application/json"
     }
     
-    # استعلام مخفف يطلب حالة التوافق المباشرة فقط لضمان قَبوله في خطة Basic
     query = """
-    query BasicCompliance($symbol: String!) {
-      advancedCompliance(symbol: $symbol) {
-        status
-        isCompliant
+    query GetCompliance($symbol: String!) {
+      security(symbol: $symbol) {
+        ticker
+        compliance {
+          status
+          isCompliant
+        }
       }
     }
     """
     
-    # محاولة الاستعلام الأساسي الأول
     payload = {
         "query": query,
         "variables": {"symbol": str(symbol).upper()}
     }
     
-    try:
-        res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if "errors" in data:
-                # إذا فشل الاستعلام المتقدم، نستخدم الاستعلام القياسي المباشر
-                fallback_query = """
-                query SimpleCompliance($symbol: String!) {
-                  compliance(symbol: $symbol) {
-                    status
-                    isCompliant
-                  }
-                }
-                """
-                res_fb = requests.post(ZOYA_GRAPHQL_URL, json={"query": fallback_query, "variables": {"symbol": str(symbol).upper()}}, headers=headers, timeout=5)
-                if res_fb.status_code == 200:
-                    fb_data = res_fb.json()
-                    return fb_data.get("data", {}).get("compliance")
-            else:
-                return data.get("data", {}).get("advancedCompliance")
-        return f"خطأ API ({res.status_code})"
-    except Exception as e:
-        return f"خطأ اتصال: {e}"
+    endpoints = [
+        "https://api.zoya.finance/graphql",
+        "https://sandbox.zoya.finance/graphql"
+    ]
+    
+    for url in endpoints:
+        try:
+            res = requests.post(url, json=payload, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                sec = data.get("data", {}).get("security")
+                if sec and "compliance" in sec:
+                    return sec.get("compliance")
+        except Exception:
+            continue
+            
+    return "خطأ صلاحية (401)"
 
 def process_alert_data(data, raw_data=""):
+    """معالجة التنبيه وبناء النص وإرساله إلى تلغرام"""
     raw_symbol = str(data.get('symbol', '') or data.get('ticker', '') or '').strip().upper()
     
     if ":" in raw_symbol:
