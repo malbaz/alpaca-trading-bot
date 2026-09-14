@@ -33,7 +33,7 @@ def send_telegram_msg(message_text):
         return False
 
 def get_zoya_compliance(symbol):
-    """فحص الفلترة الشرعية عبر GraphQL بمحاولتين مرنتين"""
+    """جلب الشرعية عبر استعلام Zoya API الرسمي المعتمد"""
     if not ZOYA_API_KEY:
         return "لم يتم تعيين ZOYA_API_KEY في Secrets"
     
@@ -44,58 +44,56 @@ def get_zoya_compliance(symbol):
         "Content-Type": "application/json"
     }
     
-    # المحاولة الأولى: عبر الاستعلام القياسي المباشر
-    query_1 = """
+    # الاستعلام الرسمي المعتمد في Zoya GraphQL Reference
+    query = """
     query GetCompliance($symbol: String!) {
       security(symbol: $symbol) {
-        ticker
-        compliance {
+        symbol
+        name
+        shariahCompliance {
           status
           isCompliant
-        }
-      }
-    }
-    """
-    
-    # المحاولة الثانية: عبر البحث الشامل عن معرف السهم
-    query_2 = """
-    query SearchSecurity($symbol: String!) {
-      search(query: $symbol) {
-        items {
-          ticker
-          compliance {
-            status
-            isCompliant
+          report {
+            nonPermissibleRevenuePercentage
+            totalDebtToMarketCapPercentage
           }
         }
       }
     }
     """
     
-    sym_upper = str(symbol).upper()
+    payload = {
+        "query": query,
+        "variables": {"symbol": str(symbol).upper()}
+    }
     
     try:
-        # تجربة المحاولة الأولى
-        res = requests.post(url, json={"query": query_1, "variables": {"symbol": sym_upper}}, headers=headers, timeout=5)
+        res = requests.post(url, json=payload, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
             sec = data.get("data", {}).get("security")
-            if sec and "compliance" in sec and sec["compliance"]:
-                return sec.get("compliance")
-        
-        # تجربة المحاولة الثانية في حال لم تظهر نتائج من الأول
-        res_search = requests.post(url, json={"query": query_2, "variables": {"symbol": sym_upper}}, headers=headers, timeout=5)
-        if res_search.status_code == 200:
-            search_items = res_search.json().get("data", {}).get("search", {}).get("items", [])
-            for item in search_items:
-                if item.get("ticker") == sym_upper and item.get("compliance"):
-                    return item.get("compliance")
-            if search_items and search_items[0].get("compliance"):
-                return search_items[0].get("compliance")
-                
-        if ZOYA_API_KEY.startswith("sandbox-"):
-            return {"status": "TEST_COMPLIANT", "isCompliant": True}
+            if sec and "shariahCompliance" in sec:
+                return sec.get("shariahCompliance")
+            
+            # خطة محاولة ثانية باسم الحقن المتوافق (enrichments)
+            query_alt = """
+            query GetComplianceAlt($symbol: String!) {
+              security(symbol: $symbol) {
+                compliance {
+                  status
+                  isCompliant
+                }
+              }
+            }
+            """
+            res_alt = requests.post(url, json={"query": query_alt, "variables": {"symbol": str(symbol).upper()}}, headers=headers, timeout=5)
+            if res_alt.status_code == 200:
+                sec_alt = res_alt.json().get("data", {}).get("security")
+                if sec_alt and "compliance" in sec_alt:
+                    return sec_alt.get("compliance")
 
+        elif res.status_code == 401:
+            return "مفتاح API غير صالح أو ملغى (401)"
     except Exception as e:
         print(f"[Exception] Zoya Query Error: {e}")
             
@@ -127,11 +125,18 @@ def process_alert_data(data, raw_data=""):
         if isinstance(zoya_res, dict):
             status = str(zoya_res.get("status", "مفحوص")).upper()
             is_compliant = zoya_res.get("isCompliant")
+            report = zoya_res.get("report") or {}
+            debt = float(report.get("totalDebtToMarketCapPercentage") or 0.0)
+            rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
 
-            if is_compliant is True or status in ["COMPLIANT", "TEST_COMPLIANT"]:
+            if is_compliant is True or status == "COMPLIANT":
                 shariah_text = f"✅ متوافق شرعاً ({status})"
+                if debt > 0 or rev > 0:
+                    shariah_text += f"\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
             elif is_compliant is False or status == "NON_COMPLIANT":
                 shariah_text = f"❌ غير متوافق شرعاً ({status})"
+                if debt > 0 or rev > 0:
+                    shariah_text += f"\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
             else:
                 shariah_text = f"ℹ️ حالة التوافق: {status}"
         else:
