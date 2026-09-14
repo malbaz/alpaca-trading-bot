@@ -166,13 +166,13 @@ if __name__ == "__main__":
     if os.getenv("GITHUB_ACTIONS") == "true":
         print("[INFO] Running in GitHub Actions CLI mode...")
         test_payload = {
-            "symbol": "AAPL",
-            "action": "CHECK",
-            "price": "N/A",
-            "reason": "فحص مجدول من GitHub Actions",
-            "interval": "Scheduled",
-            "volume": "N/A"
-        }
+    "symbol": "TSLA",
+    "action": "CHECK",
+    "price": "N/A",
+    "reason": "فحص مجدول من GitHub Actions",
+    "interval": "Scheduled",
+    "volume": "N/A"
+}
         status = process_alert_data(test_payload)
         if status:
             print("[SUCCESS] GitHub Action run completed successfully.")
