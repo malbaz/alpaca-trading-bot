@@ -12,7 +12,9 @@ app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
+
+# مفتاح Zoya المباشر (Live) للاختبار الإجباري
+ZOYA_API_KEY = "live-0267000b-e0d0-4ae0-9895-63dc1ec1d44a"
 ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
 def send_telegram_msg(message_text):
@@ -76,6 +78,8 @@ def get_zoya_compliance(symbol):
         if res.status_code == 200:
             data = res.json()
             return data.get("data", {}).get("security", {}).get("compliance", {})
+        else:
+            print(f"[Error] Zoya Response Status: {res.status_code}, Body: {res.text}")
     except Exception as e:
         print(f"[Exception] Zoya API Query Failed: {e}")
         pass
@@ -115,9 +119,11 @@ def process_alert_data(data, raw_data=""):
                     shariah_text = f"✅ متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
                 else:
                     shariah_text = f"❌ غير متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
+            else:
+                shariah_text = "لم يتم العثور على بيانات شرعية للسهم"
         except Exception as e:
             print(f"[Exception] Processing Zoya data failed: {e}")
-            pass
+            shariah_text = f"خطأ في معالجة البيانات: {e}"
 
     action_emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "🔵"
 
@@ -157,10 +163,8 @@ def webhook():
         return jsonify({"status": "error", "message": str(err)}), 500
 
 if __name__ == "__main__":
-    # إذا تم تشغيل السكريبت في بيئة GitHub Actions كـ Job مجدول (وليس خادم Webhook مستمر)
     if os.getenv("GITHUB_ACTIONS") == "true":
         print("[INFO] Running in GitHub Actions CLI mode...")
-        # تنفيذ تجريبي لتنبيه فحص النظام
         test_payload = {
             "symbol": "AAPL",
             "action": "CHECK",
@@ -177,5 +181,4 @@ if __name__ == "__main__":
             print("[FAILURE] Failed to process action.")
             sys.exit(1)
     else:
-        # تشغيل خادم Flask المحلي أو للاستضافة في Render/Vercel
         app.run(host="0.0.0.0", port=5000)
