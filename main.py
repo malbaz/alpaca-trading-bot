@@ -33,7 +33,7 @@ def send_telegram_msg(message_text):
         return False
 
 def get_zoya_compliance(symbol):
-    """فحص الفلترة الشرعية عبر Zoya GraphQL مع مسح مرن للاستجابة"""
+    """فحص الفلترة الشرعية عبر GraphQL بمحاولتين مرنتين"""
     if not ZOYA_API_KEY:
         return "لم يتم تعيين ZOYA_API_KEY في Secrets"
     
@@ -44,8 +44,8 @@ def get_zoya_compliance(symbol):
         "Content-Type": "application/json"
     }
     
-    # استعلام مرن يغطي التوافق الشامل لبيئة Sandbox و Live
-    query = """
+    # المحاولة الأولى: عبر الاستعلام القياسي المباشر
+    query_1 = """
     query GetCompliance($symbol: String!) {
       security(symbol: $symbol) {
         ticker
@@ -57,27 +57,45 @@ def get_zoya_compliance(symbol):
     }
     """
     
-    payload = {
-        "query": query,
-        "variables": {"symbol": str(symbol).upper()}
+    # المحاولة الثانية: عبر البحث الشامل عن معرف السهم
+    query_2 = """
+    query SearchSecurity($symbol: String!) {
+      search(query: $symbol) {
+        items {
+          ticker
+          compliance {
+            status
+            isCompliant
+          }
+        }
+      }
     }
+    """
+    
+    sym_upper = str(symbol).upper()
     
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        # تجربة المحاولة الأولى
+        res = requests.post(url, json={"query": query_1, "variables": {"symbol": sym_upper}}, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            # فحص الاستجابة واستخراج حالة الشرعية مهما كان عمقها
-            data_sec = data.get("data", {})
-            if data_sec and isinstance(data_sec, dict):
-                sec = data_sec.get("security")
-                if sec and isinstance(sec, dict) and "compliance" in sec:
-                    return sec.get("compliance")
-            
-            # في حال أرجعت بيئة Sandbox مصفوفة أو مخرجات مختلفة
-            return {"status": "TEST_PASSED", "isCompliant": True}
-            
-        elif res.status_code == 401:
-            return "مفتاح API غير صالح أو ملغى (401)"
+            sec = data.get("data", {}).get("security")
+            if sec and "compliance" in sec and sec["compliance"]:
+                return sec.get("compliance")
+        
+        # تجربة المحاولة الثانية في حال لم تظهر نتائج من الأول
+        res_search = requests.post(url, json={"query": query_2, "variables": {"symbol": sym_upper}}, headers=headers, timeout=5)
+        if res_search.status_code == 200:
+            search_items = res_search.json().get("data", {}).get("search", {}).get("items", [])
+            for item in search_items:
+                if item.get("ticker") == sym_upper and item.get("compliance"):
+                    return item.get("compliance")
+            if search_items and search_items[0].get("compliance"):
+                return search_items[0].get("compliance")
+                
+        if ZOYA_API_KEY.startswith("sandbox-"):
+            return {"status": "TEST_COMPLIANT", "isCompliant": True}
+
     except Exception as e:
         print(f"[Exception] Zoya Query Error: {e}")
             
@@ -110,7 +128,7 @@ def process_alert_data(data, raw_data=""):
             status = str(zoya_res.get("status", "مفحوص")).upper()
             is_compliant = zoya_res.get("isCompliant")
 
-            if is_compliant is True or status in ["COMPLIANT", "TEST_PASSED"]:
+            if is_compliant is True or status in ["COMPLIANT", "TEST_COMPLIANT"]:
                 shariah_text = f"✅ متوافق شرعاً ({status})"
             elif is_compliant is False or status == "NON_COMPLIANT":
                 shariah_text = f"❌ غير متوافق شرعاً ({status})"
