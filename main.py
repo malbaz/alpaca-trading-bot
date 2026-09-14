@@ -51,10 +51,11 @@ def get_zoya_compliance(symbol):
         "Content-Type": "application/json"
     }
     
+    # استعلام GraphQL مطابق لهيكل Zoya API
     query = """
     query GetCompliance($symbol: String!) {
       security(symbol: $symbol) {
-        symbol
+        ticker
         name
         compliance {
           status
@@ -77,12 +78,12 @@ def get_zoya_compliance(symbol):
         res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            return data.get("data", {}).get("security", {}).get("compliance", {})
-        else:
-            print(f"[Error] Zoya Response Status: {res.status_code}, Body: {res.text}")
+            sec = data.get("data", {}).get("security")
+            if sec and "compliance" in sec:
+                return sec.get("compliance")
+        print(f"[Zoya Log] Status: {res.status_code}, Response: {res.text}")
     except Exception as e:
         print(f"[Exception] Zoya API Query Failed: {e}")
-        pass
     return None
 
 def process_alert_data(data, raw_data=""):
@@ -166,13 +167,13 @@ if __name__ == "__main__":
     if os.getenv("GITHUB_ACTIONS") == "true":
         print("[INFO] Running in GitHub Actions CLI mode...")
         test_payload = {
-    "symbol": "TSLA",
-    "action": "CHECK",
-    "price": "N/A",
-    "reason": "فحص مجدول من GitHub Actions",
-    "interval": "Scheduled",
-    "volume": "N/A"
-}
+            "symbol": "TSLA",
+            "action": "CHECK",
+            "price": "N/A",
+            "reason": "فحص مجدول من GitHub Actions",
+            "interval": "Scheduled",
+            "volume": "N/A"
+        }
         status = process_alert_data(test_payload)
         if status:
             print("[SUCCESS] GitHub Action run completed successfully.")
