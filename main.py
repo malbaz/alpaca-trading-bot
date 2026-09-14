@@ -5,19 +5,15 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 
-# تحميل متغيرات البيئة
 load_dotenv(override=False)
 
 app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-# مفتاح Zoya المباشر
-ZOYA_API_KEY = "live-0267000b-e0d0-4ae0-9895-63dc1ec1d44a"
+ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
 
 def send_telegram_msg(message_text):
-    """إرسال رسالة بتنسيق HTML إلى تلغرام"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[Warning] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing.")
         return False
@@ -37,13 +33,13 @@ def send_telegram_msg(message_text):
         return False
 
 def get_zoya_compliance(symbol):
-    """فحص الفلترة الشرعية بإنعكاس ترويسات Authorization القياسية لـ Zoya"""
+    """فحص الفلترة الشرعية عبر Zoya GraphQL"""
     if not ZOYA_API_KEY:
-        return "المفتاح غير مدخل"
+        return "لم يتم تعيين ZOYA_API_KEY في Secrets"
     
-    # الترويسات المزدوجة لتفادي أخطاء الصلاحية (401)
+    url = "https://sandbox.zoya.finance/graphql" if ZOYA_API_KEY.startswith("sandbox-") else "https://api.zoya.finance/graphql"
+
     headers = {
-        "X-API-KEY": ZOYA_API_KEY,
         "Authorization": f"Bearer {ZOYA_API_KEY}",
         "Content-Type": "application/json"
     }
@@ -65,26 +61,21 @@ def get_zoya_compliance(symbol):
         "variables": {"symbol": str(symbol).upper()}
     }
     
-    endpoints = [
-        "https://api.zoya.finance/graphql",
-        "https://sandbox.zoya.finance/graphql"
-    ]
-    
-    for url in endpoints:
-        try:
-            res = requests.post(url, json=payload, headers=headers, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                sec = data.get("data", {}).get("security")
-                if sec and "compliance" in sec:
-                    return sec.get("compliance")
-        except Exception:
-            continue
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            sec = data.get("data", {}).get("security")
+            if sec and "compliance" in sec:
+                return sec.get("compliance")
+        elif res.status_code == 401:
+            return "مفتاح API غير صالح أو ملغى (401)"
+    except Exception as e:
+        print(f"[Exception] Zoya Query Error: {e}")
             
-    return "خطأ صلاحية (401)"
+    return "بيانات غير متاحة"
 
 def process_alert_data(data, raw_data=""):
-    """معالجة التنبيه وبناء النص وإرساله إلى تلغرام"""
     raw_symbol = str(data.get('symbol', '') or data.get('ticker', '') or '').strip().upper()
     
     if ":" in raw_symbol:
@@ -117,8 +108,6 @@ def process_alert_data(data, raw_data=""):
                 shariah_text = f"❌ غير متوافق شرعاً ({status})"
             else:
                 shariah_text = f"ℹ️ حالة التوافق: {status}"
-        elif zoya_res is None:
-            shariah_text = "لم يتم العثور على بيانات شرعية"
         else:
             shariah_text = f"⚠️ {zoya_res}"
 
