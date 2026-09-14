@@ -14,6 +14,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # مفتاح Zoya المباشر
 ZOYA_API_KEY = "live-0267000b-e0d0-4ae0-9895-63dc1ec1d44a"
+ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
 def send_telegram_msg(message_text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -35,7 +36,7 @@ def send_telegram_msg(message_text):
         return False
 
 def get_zoya_compliance(symbol):
-    """فحص الفلترة الشرعية عبر واجهة Zoya المباشرة مع معالجة كافة أنماط الاستجابة"""
+    """فحص الفلترة الشرعية عبر GraphQL المتوافق مع خطة Basic Data"""
     if not ZOYA_API_KEY:
         return "المفتاح غير مدخل"
     
@@ -44,17 +45,43 @@ def get_zoya_compliance(symbol):
         "Content-Type": "application/json"
     }
     
-    # تجربة طلب REST البسيط
-    url = f"https://api.zoya.finance/v1/compliance?symbol={str(symbol).upper()}"
+    # استعلام مخفف يطلب حالة التوافق المباشرة فقط لضمان قَبوله في خطة Basic
+    query = """
+    query BasicCompliance($symbol: String!) {
+      advancedCompliance(symbol: $symbol) {
+        status
+        isCompliant
+      }
+    }
+    """
+    
+    # محاولة الاستعلام الأساسي الأول
+    payload = {
+        "query": query,
+        "variables": {"symbol": str(symbol).upper()}
+    }
     
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.post(ZOYA_GRAPHQL_URL, json=payload, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            return data
-        else:
-            # في حال وجود تقييد على الخطة، سيتم طباعة رمز الخطأ
-            return f"خطأ API ({res.status_code})"
+            if "errors" in data:
+                # إذا فشل الاستعلام المتقدم، نستخدم الاستعلام القياسي المباشر
+                fallback_query = """
+                query SimpleCompliance($symbol: String!) {
+                  compliance(symbol: $symbol) {
+                    status
+                    isCompliant
+                  }
+                }
+                """
+                res_fb = requests.post(ZOYA_GRAPHQL_URL, json={"query": fallback_query, "variables": {"symbol": str(symbol).upper()}}, headers=headers, timeout=5)
+                if res_fb.status_code == 200:
+                    fb_data = res_fb.json()
+                    return fb_data.get("data", {}).get("compliance")
+            else:
+                return data.get("data", {}).get("advancedCompliance")
+        return f"خطأ API ({res.status_code})"
     except Exception as e:
         return f"خطأ اتصال: {e}"
 
@@ -82,22 +109,18 @@ def process_alert_data(data, raw_data=""):
         zoya_res = get_zoya_compliance(symbol)
         
         if isinstance(zoya_res, dict):
-            compliance = zoya_res.get("compliance") or zoya_res
-            status = str(compliance.get("status", "مفحوص"))
-            is_compliant = compliance.get("isCompliant") or compliance.get("is_compliant")
-            
-            report = compliance.get("report") or {}
-            debt = float(report.get("debtToMarketCapPercentage") or compliance.get("debt_ratio") or 0.0)
-            rev = float(report.get("nonPermissibleRevenuePercentage") or compliance.get("impermissible_revenue_ratio") or 0.0)
+            status = str(zoya_res.get("status", "مفحوص")).upper()
+            is_compliant = zoya_res.get("isCompliant")
 
-            if is_compliant is True:
-                shariah_text = f"✅ متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
-            elif is_compliant is False:
-                shariah_text = f"❌ غير متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
+            if is_compliant is True or status == "COMPLIANT":
+                shariah_text = f"✅ متوافق شرعاً ({status})"
+            elif is_compliant is False or status == "NON_COMPLIANT":
+                shariah_text = f"❌ غير متوافق شرعاً ({status})"
             else:
                 shariah_text = f"ℹ️ حالة التوافق: {status}"
+        elif zoya_res is None:
+            shariah_text = "لم يتم العثور على بيانات شرعية"
         else:
-            # إظهار السبب المباشر في الرسالة للتشخيص
             shariah_text = f"⚠️ {zoya_res}"
 
     action_emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "🔵"
