@@ -14,7 +14,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # مفتاح Zoya المباشر
 ZOYA_API_KEY = "live-0267000b-e0d0-4ae0-9895-63dc1ec1d44a"
-ZOYA_GRAPHQL_URL = "https://api.zoya.finance/graphql"
 
 def send_telegram_msg(message_text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -36,82 +35,28 @@ def send_telegram_msg(message_text):
         return False
 
 def get_zoya_compliance(symbol):
-    """جلب الشرعية عبر الخطوة المزدوجة: البحث عن ID ثم جلب Compliance"""
+    """فحص الفلترة الشرعية عبر واجهة Zoya المباشرة مع معالجة كافة أنماط الاستجابة"""
     if not ZOYA_API_KEY:
-        return None
+        return "المفتاح غير مدخل"
     
     headers = {
         "Authorization": f"Bearer {ZOYA_API_KEY}",
         "Content-Type": "application/json"
     }
     
-    # الخطوة 1: البحث عن ID السهم
-    search_query = """
-    query SearchSecurity($query: String!) {
-      search(query: $query) {
-        items {
-          id
-          ticker
-          name
-        }
-      }
-    }
-    """
+    # تجربة طلب REST البسيط
+    url = f"https://api.zoya.finance/v1/compliance?symbol={str(symbol).upper()}"
     
     try:
-        search_res = requests.post(
-            ZOYA_GRAPHQL_URL, 
-            json={"query": search_query, "variables": {"query": str(symbol).upper()}}, 
-            headers=headers, 
-            timeout=5
-        )
-        
-        sec_id = None
-        if search_res.status_code == 200:
-            items = search_res.json().get("data", {}).get("search", {}).get("items", [])
-            for item in items:
-                if item.get("ticker") == str(symbol).upper():
-                    sec_id = item.get("id")
-                    break
-            if not sec_id and items:
-                sec_id = items[0].get("id")
-                
-        if not sec_id:
-            sec_id = str(symbol).upper()
-
-        # الخطوة 2: جلب تقرير الشرعية باستخدام ID
-        compliance_query = """
-        query GetCompliance($id: String!) {
-          security(id: $id) {
-            ticker
-            compliance {
-              status
-              isCompliant
-              report {
-                nonPermissibleRevenuePercentage
-                debtToMarketCapPercentage
-              }
-            }
-          }
-        }
-        """
-        
-        comp_res = requests.post(
-            ZOYA_GRAPHQL_URL, 
-            json={"query": compliance_query, "variables": {"id": sec_id}}, 
-            headers=headers, 
-            timeout=5
-        )
-        
-        if comp_res.status_code == 200:
-            sec_data = comp_res.json().get("data", {}).get("security")
-            if sec_data and "compliance" in sec_data:
-                return sec_data.get("compliance")
-                
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            return data
+        else:
+            # في حال وجود تقييد على الخطة، سيتم طباعة رمز الخطأ
+            return f"خطأ API ({res.status_code})"
     except Exception as e:
-        print(f"[Exception] Zoya Workflow Error: {e}")
-        
-    return None
+        return f"خطأ اتصال: {e}"
 
 def process_alert_data(data, raw_data=""):
     raw_symbol = str(data.get('symbol', '') or data.get('ticker', '') or '').strip().upper()
@@ -134,23 +79,26 @@ def process_alert_data(data, raw_data=""):
     shariah_text = "فحص الشرعية غير متاح"
 
     if symbol != "تنبيه عام":
-        try:
-            zoya_data = get_zoya_compliance(symbol)
-            if zoya_data:
-                status = str(zoya_data.get("status", "UNKNOWN"))
-                report = zoya_data.get("report") or {}
-                debt = float(report.get("debtToMarketCapPercentage") or 0.0)
-                rev = float(report.get("nonPermissibleRevenuePercentage") or 0.0)
-                is_compliant = zoya_data.get("isCompliant")
+        zoya_res = get_zoya_compliance(symbol)
+        
+        if isinstance(zoya_res, dict):
+            compliance = zoya_res.get("compliance") or zoya_res
+            status = str(compliance.get("status", "مفحوص"))
+            is_compliant = compliance.get("isCompliant") or compliance.get("is_compliant")
+            
+            report = compliance.get("report") or {}
+            debt = float(report.get("debtToMarketCapPercentage") or compliance.get("debt_ratio") or 0.0)
+            rev = float(report.get("nonPermissibleRevenuePercentage") or compliance.get("impermissible_revenue_ratio") or 0.0)
 
-                if is_compliant:
-                    shariah_text = f"✅ متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
-                else:
-                    shariah_text = f"❌ غير متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
+            if is_compliant is True:
+                shariah_text = f"✅ متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
+            elif is_compliant is False:
+                shariah_text = f"❌ غير متوافق ({status})\n   الديون: {debt:.2f}%\n   غير المباح: {rev:.2f}%"
             else:
-                shariah_text = "لم يتم العثور على بيانات شرعية للسهم"
-        except Exception as e:
-            shariah_text = f"خطأ معالجة: {e}"
+                shariah_text = f"ℹ️ حالة التوافق: {status}"
+        else:
+            # إظهار السبب المباشر في الرسالة للتشخيص
+            shariah_text = f"⚠️ {zoya_res}"
 
     action_emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "🔵"
 
