@@ -1,6 +1,7 @@
+# كود main.py المحدث بدون فحص شرعي ومع بطاقة التوصية الشاملة
+
 import os
 import json
-import sys
 import requests
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -11,157 +12,83 @@ app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-ZOYA_API_KEY = os.getenv("ZOYA_API_KEY", "").strip()
 
 def send_telegram_msg(message_text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[Warning] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing.")
         return False
-    
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message_text,
         "parse_mode": "HTML"
     }
-    
+
     try:
-        res = requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=5)
         return res.status_code == 200
-    except Exception as e:
-        print(f"[Exception] Failed to send Telegram message: {e}")
+    except Exception:
         return False
 
-def get_zoya_compliance(symbol):
-    """فحص الشرعية وتوفير الاستجابة المتوافقة مع كافة الفئات"""
-    if not ZOYA_API_KEY:
-        return "لم يتم تعيين ZOYA_API_KEY في Secrets"
-    
-    url = "https://sandbox.zoya.finance/graphql" if ZOYA_API_KEY.startswith("sandbox-") else "https://api.zoya.finance/graphql"
-
-    headers = {
-        "Authorization": f"Bearer {ZOYA_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    query = """
-    query GetCompliance($symbol: String!) {
-      security(symbol: $symbol) {
-        ticker
-        shariahCompliance {
-          status
-          isCompliant
-        }
-      }
-    }
-    """
-    
-    try:
-        res = requests.post(url, json={"query": query, "variables": {"symbol": str(symbol).upper()}}, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            sec = data.get("data", {}).get("security")
-            if sec and sec.get("shariahCompliance"):
-                return sec.get("shariahCompliance")
-                
-        elif res.status_code == 401:
-            return "مفتاح API غير صالح أو ملغى (401)"
-    except Exception as e:
-        print(f"[Exception] Zoya Query Error: {e}")
-            
-    # إرجاع حالة توافقافتراضية متجاوبة للاختبارات عند التقييد على الخطة
-    return {"status": "COMPLIANT", "isCompliant": True, "note": "Basic Plan Verified"}
-
-def process_alert_data(data, raw_data=""):
-    raw_symbol = str(data.get('symbol', '') or data.get('ticker', '') or '').strip().upper()
-    
-    if ":" in raw_symbol:
-        symbol = raw_symbol.split(":")[-1]
-    else:
-        symbol = raw_symbol
-
-    price = str(data.get("price", "N/A")).strip()
-    action = str(data.get("action", "ALERT")).strip().upper()
-    reason = str(data.get("reason", "تنبيه فني")).strip()
-    interval = str(data.get("interval", "غير محدد")).strip()
-    volume = str(data.get("volume", "N/A")).strip()
-
-    if not symbol:
-        symbol = "تنبيه عام"
-        reason = raw_data if raw_data else "تنبيه بدون بيانات"
-
-    shariah_text = "فحص الشرعية غير متاح"
-
-    if symbol != "تنبيه عام":
-        zoya_res = get_zoya_compliance(symbol)
-        
-        if isinstance(zoya_res, dict):
-            status = str(zoya_res.get("status", "مفحوص")).upper()
-            is_compliant = zoya_res.get("isCompliant")
-
-            if is_compliant is True or status == "COMPLIANT":
-                shariah_text = f"✅ متوافق شرعاً ({status})"
-            elif is_compliant is False or status == "NON_COMPLIANT":
-                shariah_text = f"❌ غير متوافق شرعاً ({status})"
-            else:
-                shariah_text = f"ℹ️ حالة التوافق: {status}"
-        else:
-            shariah_text = f"⚠️ {zoya_res}"
-
-    action_emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "🔵"
-
-    message_text = (
-        f"{action_emoji} <b>تنبيه فرصة تداول ({symbol})</b>\n\n"
-        f"📌 <b>السهم:</b> <code>{symbol}</code>\n"
-        f"💰 <b>السعر الحالي:</b> ${price}\n"
-        f"🎯 <b>نوع الإشارة:</b> {action}\n"
-        f"⏱ <b>الفاصل الزمني:</b> {interval}\n"
-        f"📊 <b>حجم التداول:</b> {volume}\n"
-        f"📝 <b>السبب:</b> {reason}\n\n"
-        f"🕋 <b>الوضع الشرعي (Zoya):</b>\n{shariah_text}"
-    )
-
-    return send_telegram_msg(message_text)
-
-@app.route("/", methods=["GET"])
+@app.route('/', methods=['GET'])
 def home():
     return jsonify({"status": "online"}), 200
 
-@app.route("/webhook", methods=["POST"])
+@app.route('/webhook', methods=['POST'])
 def webhook():
     try:
         raw_data = request.get_data(as_text=True)
         data = {}
+
         try:
             data = json.loads(raw_data)
         except Exception:
             data = request.get_json(force=True, silent=True) or {}
-            
-        success = process_alert_data(data, raw_data)
-        if success:
-            return jsonify({"status": "success", "message": "Alert sent to Telegram"}), 200
+
+        raw_symbol = str(data.get("symbol", "") or data.get("ticker", "") or "").strip().upper()
+        
+        if ":" in raw_symbol:
+            symbol = raw_symbol.split(":")[-1]
         else:
-            return jsonify({"status": "error", "message": "Failed to send to Telegram"}), 500
+            symbol = raw_symbol
+
+        name = str(data.get("name", symbol)).strip()
+        action = str(data.get("action", "") or data.get("signal", "ALERT")).strip().upper()
+        timeframe = str(data.get("timeframe", "") or data.get("interval", "لحظي")).strip()
+        
+        entry_price = str(data.get("entry_price", "") or data.get("price", "N/A")).strip()
+        entry_time = str(data.get("entry_time", "فور إطلاق التنبيه")).strip()
+        
+        tp1 = str(data.get("tp1", "N/A")).strip()
+        tp2 = str(data.get("tp2", "غير محدد")).strip()
+        tp3 = str(data.get("tp3", "غير محدد")).strip()
+        
+        sl = str(data.get("sl", "N/A")).strip()
+        exit_time = str(data.get("exit_time", "عند تحقق الهدف أو وقف الخسارة")).strip()
+
+        action_icon = "🟢" if "BUY" in action or "شراء" in action else "🔴" if "SELL" in action or "بيع" in action else "🔵"
+
+        message_text = (
+            f"<b>{action_icon} توصية تداول جديدة</b>\n\n"
+            f"📌 <b>رمز واسم السهم:</b> <code>{symbol}</code> ({name})\n"
+            f"⚡ <b>اتجاه الصفقة:</b> {action}\n"
+            f"⏱️ <b>الإطار الزمني:</b> {timeframe}\n"
+            f"💰 <b>نطاق سعر ووقت الدخول:</b> ${entry_price} | {entry_time}\n\n"
+            f"🎯 <b>الهدف الأول:</b> {tp1}\n"
+            f"🎯 <b>الهدف الثاني:</b> {tp2}\n"
+            f"🎯 <b>الهدف الثالث:</b> {tp3}\n\n"
+            f"🛑 <b>سعر وقف الخسارة:</b> {sl}\n"
+            f"⏳ <b>وقت الخروج المقترح:</b> {exit_time}"
+        )
+
+        sent = send_telegram_msg(message_text)
+        if sent:
+            return jsonify({"status": "success", "message": "Alert sent"}), 200
+        else:
+            return jsonify({"status": "error", "message": "Telegram failed"}), 500
+
     except Exception as err:
         return jsonify({"status": "error", "message": str(err)}), 500
 
-if __name__ == "__main__":
-    if os.getenv("GITHUB_ACTIONS") == "true":
-        print("[INFO] Running in GitHub Actions CLI mode...")
-        test_payload = {
-            "symbol": "TSLA",
-            "action": "CHECK",
-            "price": "N/A",
-            "reason": "فحص مجدول من GitHub Actions",
-            "interval": "Scheduled",
-            "volume": "N/A"
-        }
-        status = process_alert_data(test_payload)
-        if status:
-            print("[SUCCESS] GitHub Action run completed successfully.")
-            sys.exit(0)
-        else:
-            print("[FAILURE] Failed to process action.")
-            sys.exit(1)
-    else:
-        app.run(host="0.0.0.0", port=5000)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
