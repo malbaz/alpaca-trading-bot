@@ -9,10 +9,10 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# قائمة استرشادية لأسهم السمول كاب للمسح
 WATCHLIST = [
-    "AMIX", "ADXN", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
-    "MARK", "CYN", "MULN", "PLTR", "SASI", "BZFD", "JEM"
+    "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
+    "MARK", "CYN", "MULN", "PLTR", "BZFD", "QNST", 
+    "SHIP", "CWCO", "BNAI", "AISP"
 ]
 
 def send_telegram_alert(symbol, name, price, volume, change_percent):
