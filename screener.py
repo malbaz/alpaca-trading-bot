@@ -66,7 +66,7 @@ def execute_paper_trade(symbol, price):
         return
 
     try:
-        client = TradingClient(api_key, secret_key, paper=True)
+        client = TradingClient(api_key, secret_key, paper=False)
         allocation = 20  # تخصيص 20$ لكل صفقة تجريبية
         qty = max(1, int(allocation / price))
         limit_price = round(price, 2)
