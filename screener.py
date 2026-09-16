@@ -2,7 +2,7 @@ import os
 import requests
 import yfinance as yf
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 # استدعاء متغيرات البيئة الخاصة بتليجرام
@@ -26,12 +26,12 @@ def send_telegram_alert(symbol, name, price, volume, change_percent):
     sl = round(entry_price * 0.93, 2)
 
     message_text = (
-        "🟢 <b>فرصة تداول مكتشفة تلقائياً</b>\n\n"
+        "🟢 <b>فرصة تداول مكتشفة تلقائياً (Pre-Market / Regular)</b>\n\n"
         f"📌 <b>رمز واسم السهم:</b> <code>{symbol}</code> ({name})\n"
         "⚡ <b>اتجاه الصفقة:</b> شراء (اختراق وزخم)\n"
         "⏱️ <b>الإطار الزمني:</b> لحظي / يومي\n"
         f"💰 <b>نطاق سعر ووقت الدخول:</b> ${entry_price} | مسح آلي\n\n"
-        f"📊 <b>التغير اليومي:</b> +{change_percent:.2f}%\n"
+        f"📊 <b>التغير الحالي:</b> +{change_percent:.2f}%\n"
         f"📈 <b>حجم التداول:</b> {volume:,}\n\n"
         f"🎯 <b>الهدف الأول:</b> ${tp1}\n"
         f"🎯 <b>الهدف الثاني:</b> ${tp2}\n"
@@ -57,7 +57,7 @@ def send_telegram_alert(symbol, name, price, volume, change_percent):
         print(f"خطأ أثناء الاتصال بتليجرام: {e}")
 
 def execute_paper_trade(symbol, price):
-    """دالة معزولة لتنفيذ التداول الافتراضي على Alpaca"""
+    """دالة معزولة لتنفيذ التداول الافتراضي تدعم ما قبل السوق (Pre-market)"""
     api_key = os.getenv('ALPACA_API_KEY')
     secret_key = os.getenv('ALPACA_SECRET_KEY')
     
@@ -69,39 +69,44 @@ def execute_paper_trade(symbol, price):
         client = TradingClient(api_key, secret_key, paper=True)
         allocation = 20  # تخصيص 20$ لكل صفقة تجريبية
         qty = max(1, int(allocation / price))
+        limit_price = round(price, 2)
 
-        order_data = MarketOrderRequest(
+        # استخدام أمر محدّد السعر (Limit Order) يدعم الساعات الممتدة (Extended Hours)
+        order_data = LimitOrderRequest(
             symbol=symbol,
             qty=qty,
             side=OrderSide.BUY,
-            time_in_force=TimeInForce.DAY
+            time_in_force=TimeInForce.DAY,
+            limit_price=limit_price,
+            extended_hours=True  # تفعيل التداول في Pre-market
         )
         client.submit_order(order_data=order_data)
-        print(f"✅ تم تنفيذ صفقة افتراضية: شراء {qty} سهم في {symbol}")
+        print(f"✅ تم تنفيذ صفقة افتراضية (Pre-market): شراء {qty} سهم في {symbol} بسعر ${limit_price}")
     except Exception as e:
-        # خطأ التداول الوهمي لا يوقف البرامج ولا يعطل إرسال القروب
         print(f"⚠️ خطأ في التداول الافتراضي: {e}")
 
 def run_screener():
-    print("بدء عملية فحص الأسهم...")
+    print("بدء عملية فحص الأسهم (بما في ذلك Pre-market)...")
     matching_stocks = []
 
     for symbol in WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="2d")
+            # تفعيل prepost=True لقراءة بيانات ما قبل التداول
+            hist = ticker.history(period="1d", interval="5m", prepost=True)
             
-            if len(hist) < 2:
+            if hist.empty or len(hist) < 2:
                 continue
 
-            prev_close = hist['Close'].iloc[-2]
+            # السعر الحالي والتغير مقارنة بأول شمعة في اليوم
+            first_price = hist['Open'].iloc[0]
             current_price = hist['Close'].iloc[-1]
-            volume = hist['Volume'].iloc[-1]
+            volume = hist['Volume'].sum()
             
-            change_percent = ((current_price - prev_close) / prev_close) * 100
+            change_percent = ((current_price - first_price) / first_price) * 100
 
-            # شروط التصفية (ارتفاع أكثر من 3% وحجم تداول مناسب)
-            if change_percent >= 3.0 and volume > 100000:
+            # شروط التصفية لخطف الفرص السريعة (تغير >= 2% وحجم تداول مناسب)
+            if change_percent >= 2.0 and volume > 10000:
                 name = ticker.info.get('shortName', symbol)
                 matching_stocks.append({
                     'symbol': symbol,
@@ -119,7 +124,7 @@ def run_screener():
             send_telegram_alert(
                 stock['symbol'], stock['name'], stock['price'], stock['volume'], stock['change_percent']
             )
-            # 2. تنفيذ التداول الوهمي في المسار المعزول
+            # 2. تنفيذ التداول الوهمي المخصص لـ Pre-market
             execute_paper_trade(stock['symbol'], stock['price'])
     else:
         print("لم يتم العثور على أسهم تطابق الشروط حالياً.")
