@@ -13,7 +13,9 @@ WATCHLIST = [
     "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
     "MARK", "CYN", "MULN", "PLTR", "BZFD", "QNST", 
     "SHIP", "CWCO", "BNAI", "AISP", "SNDL", "KULR",
-    "RIG", "GTEC", "AMIX", "ADXN", "RETO", "PDSB"
+    "RIG", "GTEC", "AMIX", "ADXN", "RETO", "PDSB", 
+    "GENVR", "RTB", "WATT", "ALMU", "MEDS", "IREG", 
+    "SOFI", "SNAP"
 ]
 
 def send_telegram_alert(symbol, name, price, volume, change_percent):
