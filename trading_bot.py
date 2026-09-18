@@ -21,9 +21,10 @@ PAPER_TRADING = False
 # قائمة الأسهم العشرين المعتمدة للمسح والتداول
 WATCHLIST = [
     "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
-    "MARK", "CYN", "MULN", "PLTR", "BZFD", "QNST", 
+    "MARK", "CYN", "MULN", "PLTR", 
+"BZFD", "QNST", 
     "SHIP", "CWCO", "BNAI", "AISP", "SNDL", "KULR",
-    "RIG", "GTEC", "RETO", "PDSB"
+    "RIG", "GTEC", "RETO", "PDSB", "DAIC"
 ]
 
 # -------------------------------------------------------------------
