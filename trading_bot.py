@@ -21,7 +21,7 @@ WATCHLIST = [
     "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
     "MARK", "CYN", "MULN", "PLTR", "BZFD", "QNST", 
     "SHIP", "CWCO", "BNAI", "AISP", "SNDL", "KULR",
-    "RIG", "GTEC", "RETO", "PDSB", "AMIX"
+    "RIG", "GTEC", "RETO", "PDSB", "AMIX", "DAIC"
 ]
 
 TRADE_AMOUNT_USD = 50.0       # حجم الصفقة بالدولار
