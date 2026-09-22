@@ -115,7 +115,8 @@ def execute_trade(trading_client, symbol, yf_price):
             stop_loss=StopLossRequest(stop_price=stop_loss_price)
         )
         
-        trading_client.submit_order(request=order_request)
+        # السطر المحدث الصحيح
+        trading_client.submit_order(order_request)
         print(f"✅ تم إرسال أمر الشراء بنجاح لـ {symbol} لدى Alpaca.")
         return True
 
