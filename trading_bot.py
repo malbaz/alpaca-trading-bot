@@ -23,7 +23,7 @@ PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
 WATCHLIST = [
     "AMIX", "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
     "CYN", "PLTR", "BZFD", "QNST", "SHIP", "CWCO", "BNAI", "AISP", 
-    "SNDL", "KULR", "RIG", "GTEC", "RETO", "PDSB"
+    "SNDL", "KULR", "RIG", "GTEC", "RETO", "PDSB", "JAGX", "GRML", "BFLY", "HQWWW", "EAF"
 ]
 
 TRADE_AMOUNT_USD = 50.0       # حجم الصفقة بالدولار
