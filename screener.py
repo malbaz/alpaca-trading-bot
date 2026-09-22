@@ -10,12 +10,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 WATCHLIST = [
-    "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
-    "MARK", "CYN", "MULN", "PLTR", "BZFD", "QNST", 
-    "SHIP", "CWCO", "BNAI", "AISP", "SNDL", "KULR",
-    "RIG", "GTEC", "AMIX", "ADXN", "RETO", "PDSB", 
-    "GENVR", "RTB", "WATT", "ALMU", "MEDS", "IREG", 
-    "SOFI", "SNAP", "DAIC", "KXIN", "AEHL", "JAGX", "GRML", "BFLY", "HQWWW", "EAF"
+        "AMIX", "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
+    "CYN", "PLTR", "BZFD", "QNST", "SHIP", "CWCO", "BNAI", "AISP", 
+    "SNDL", "KULR", "RIG", "GTEC", "RETO", "PDSB", "JAGX", "GRML", "BFLY", "HQWWW", "EAF", "IPDN", "TLSI", "IONL", "WFCF", "CPOP", "LGHL"
 ]
 
 def send_telegram_alert(symbol, name, price, volume, change_percent):
