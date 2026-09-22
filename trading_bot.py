@@ -27,9 +27,9 @@ WATCHLIST = [
 ]
 
 TRADE_AMOUNT_USD = 50.0       # حجم الصفقة بالدولار
-MIN_CHANGE_PCT = 0.5          # تم ضبطها للاختبار المحلي
+MIN_CHANGE_PCT = 4.0          # تم ضبطها للاختبار المحلي
 MIN_VOLUME = 100000           # الحد الأدنى لحجم التداول
-MAX_SPREAD_PCT = 5.0          # تم رفعها للاختبار المحلي
+MAX_SPREAD_PCT = 0.8          # تم رفعها للاختبار المحلي
 STOP_LOSS_PCT = 0.03          # نسبة وقف الخسارة (3%)
 TAKE_PROFIT_PCT = 0.06        # نسبة جني الأرباح (6%)
 
