@@ -1,9 +1,8 @@
 name: Market Screener Bot
 
 on:
-  schedule:
-    # تشغيل تلقائي كل 15 دقيقة خلال ساعات التداول من الإثنين إلى الجمعة
-    - cron: '*/15 13-21 * * 1-5'
+  # schedule:
+  #   - cron: '*/15 13-21 * * 1-5'
   workflow_dispatch:
 
 jobs:
