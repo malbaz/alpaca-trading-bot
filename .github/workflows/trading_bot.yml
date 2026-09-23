@@ -2,14 +2,13 @@ name: Run Alpaca Trading Bot
 
 on:
   schedule:
-    - cron: '*/30 13-20 * * 1-5' # تشغيل آلي كل 30 دقيقة أثناء ساعات السوق الأمريكي
+    # تشغيل كل 15 دقيقة على مدار 24 ساعة لضمان تغطية Pre-Market و Regular و After-Hours
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
   run-bot:
-    runs-on: ubuntu-24.04 # تحديد بيئة متوافقة حديثة
-    timeout-minutes: 5
-
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -22,7 +21,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance alpaca-py requests
+          pip install requests yfinance alpaca-py
 
       - name: Execute Trading Bot
         env:
@@ -30,4 +29,5 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PAPER_TRADING: "true"
         run: python trading_bot.py
