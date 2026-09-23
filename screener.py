@@ -10,9 +10,14 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 WATCHLIST = [
-        "AMIX", "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV",
-    "CYN", "PLTR", "BZFD", "QNST", "SHIP", "CWCO", "BNAI", "AISP", 
-    "SNDL", "KULR", "RIG", "GTEC", "RETO", "PDSB", "JAGX", "GRML", "BFLY", "HQWWW", "EAF", "IPDN", "TLSI", "IONL", "WFCF", "CPOP", "LGHL"
+    # الأسهم الشرعية المفلترة من منصة سهم (تحت 16$)
+    "ONCY", "ABVC", "LRHC", "TLSI", "DKGFHY", "DBRG",
+    
+    # الأسهم الشرعية المنقاة من قائمتك الحالية (تحت 16$)
+    "AMIX", "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV", 
+    "CYN", "BZFD", "QNST", "SHIP", "CWCO", "BNAI", "AISP", 
+    "KULR", "RIG", "GTEC", "RETO", "PDSB", "JAGX", "GRML", 
+    "BFLY", "EAF", "IPDN", "WFCF", "CPOP", "LGHL"
 ]
 
 def send_telegram_alert(symbol, name, price, volume, change_percent):
