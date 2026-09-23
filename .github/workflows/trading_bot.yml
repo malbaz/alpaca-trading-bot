@@ -3,7 +3,7 @@ name: Run Alpaca Trading Bot
 on:
   schedule:
     # تشغيل كل 15 دقيقة على مدار 24 ساعة لضمان تغطية Pre-Market و Regular و After-Hours
-    - cron: '*/15 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
