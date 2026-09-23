@@ -25,7 +25,7 @@ WATCHLIST = [
     "AMIX", "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV", 
     "CYN", "BZFD", "QNST", "SHIP", "CWCO", "BNAI", "AISP", 
     "KULR", "RIG", "GTEC", "RETO", "PDSB", "JAGX", "GRML", 
-    "BFLY", "EAF", "IPDN", "WFCF", "CPOP", "LGHL", "TNMG"
+    "BFLY", "EAF", "IPDN", "WFCF", "CPOP", "LGHL", "TNMG", "PBM", "ATGL"
 ]
 
 TRADE_AMOUNT_USD = 100.0      # رفع حجم الصفقة إلى 100 دولار
