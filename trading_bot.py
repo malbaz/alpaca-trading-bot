@@ -15,7 +15,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # ضبط وضع التجربة
-PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
+PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 
 # قائمة الأسهم المحدثة (الشرعية وتحت $16)
 WATCHLIST = [
