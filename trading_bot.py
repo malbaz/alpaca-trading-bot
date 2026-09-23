@@ -83,11 +83,9 @@ def send_telegram_recommendation(symbol, price, change_percent, volume, is_exten
 
 def execute_trade(trading_client, symbol, current_price):
     try:
-        # حساب كمية الأسهم
         qty = max(1, int(TRADE_AMOUNT_USD / current_price))
         limit_price = round(current_price * 1.005, 2)  # سماحية دخول 0.5% لضمان التنفيذ
 
-        # استخدام أمر حدي يدعم التداول الممتد (Pre-Market / After-Hours)
         order_data = LimitOrderRequest(
             symbol=symbol,
             qty=qty,
@@ -110,7 +108,7 @@ def execute_trade(trading_client, symbol, current_price):
 # ---------------------------------------------------------
 
 def manage_open_positions(trading_client):
-    """ مراقبة الصفقات المفتوحة الخروج بـ Target أو Stop Loss حتى في التداول الممتد """
+    """ مراقبة الصفقات المفتوحة والخروج بـ Target أو Stop Loss حتى في التداول الممتد """
     try:
         positions = trading_client.get_all_positions()
         for pos in positions:
@@ -121,7 +119,6 @@ def manage_open_positions(trading_client):
 
             change_pct = (current_price - entry_price) / entry_price
 
-            # تحقق من شرط جني الأرباح أو وقف الخسارة
             if change_pct >= TAKE_PROFIT_PCT or change_pct <= -STOP_LOSS_PCT:
                 reason = "🎯 جني الأرباح (+6%)" if change_pct >= TAKE_PROFIT_PCT else "🛑 وقف الخسارة (-3%)"
                 print(f"🚨 تفعيل الخروج لـ {symbol}: {reason} [السعر الحالي: ${current_price:.2f}]")
@@ -144,7 +141,7 @@ def manage_open_positions(trading_client):
 # ---------------------------------------------------------
 
 def run_trading_bot():
-    print(f"[{yf.Utils().get_json}] بدء تشغيل محرك التداول الممتد (Paper={PAPER_TRADING})...")
+    print(f"🚀 بدء تشغيل محرك التداول الممتد (Paper={PAPER_TRADING})...")
 
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         print("❌ خطأ: مفاتيح Alpaca غير كافية.")
@@ -177,20 +174,16 @@ def run_trading_bot():
 
             change_percent = ((current_price - prev_close) / prev_close) * 100
 
-            # تطبيق شروط الدخول والفلترة
             if change_percent >= MIN_CHANGE_PCT and volume >= MIN_VOLUME and current_price <= 16.0:
                 print(f"🎯 فرصة مكتشفة على {symbol}: ارتفاع {change_percent:.2f}% | السعر: ${current_price:.2f}")
 
-                # إرسال تنبيه تليجرام
                 send_telegram_recommendation(symbol, current_price, change_percent, volume, is_extended=True)
-
-                # تنفيذ الشراء التلقائي
                 execute_trade(trading_client, symbol, current_price)
 
         except Exception as e:
             print(f"⚠️ خطأ أثناء فحص السهم {symbol}: {e}")
 
-    print("🏁 اكتمل المسح والتنفيد بنجاح.")
+    print("🏁 اكتمل المسح والتنفيذ بنجاح.")
 
 if __name__ == "__main__":
     run_trading_bot()
