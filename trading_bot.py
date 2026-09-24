@@ -19,7 +19,7 @@ PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
 
 # قائمة الأسهم المحدثة (الشرعية وتحت $16)
 WATCHLIST = [
-    "ONCY", "ABVC", "LRHC", "TLSI", "DKGFHY", "DBRG",
+    "ONCY", "ABVC", "LRHC", "TLSI", "DBRG",
     "AMIX", "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV", 
     "CYN", "BZFD", "QNST", "SHIP", "CWCO", "BNAI", "AISP", 
     "KULR", "RIG", "GTEC", "RETO", "PDSB", "JAGX", "GRML", 
