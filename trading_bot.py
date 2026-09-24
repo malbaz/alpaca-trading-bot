@@ -6,7 +6,7 @@ from alpaca.trading.requests import LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 # ---------------------------------------------------------
-# 1. الإعدادات ومتغيرات البيئة المعززة
+# 1. الإعدادات والمعايير السريعة للتداول الخاطف (Fast Scalp & Rotation)
 # ---------------------------------------------------------
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
@@ -15,28 +15,26 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # ضبط وضع التجربة
-PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
+PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
 
 # قائمة الأسهم المحدثة (الشرعية وتحت $16)
 WATCHLIST = [
-    # الأسهم الشرعية المفلترة من منصة سهم
     "ONCY", "ABVC", "LRHC", "TLSI", "DKGFHY", "DBRG",
-    # الأسهم الشرعية المنقاة من القائمة الحالية
     "AMIX", "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV", 
     "CYN", "BZFD", "QNST", "SHIP", "CWCO", "BNAI", "AISP", 
     "KULR", "RIG", "GTEC", "RETO", "PDSB", "JAGX", "GRML", 
-    "BFLY", "EAF", "IPDN", "WFCF", "CPOP", "LGHL", "TNMG", "PBM", "ATGL"
+    "BFLY", "EAF", "IPDN", "WFCF", "CPOP", "LGHL"
 ]
 
-TRADE_AMOUNT_USD = 100.0      # رفع حجم الصفقة إلى 100 دولار
-MIN_CHANGE_PCT = 4.0          # الحد الأدنى لنسبة الارتفاع %
-MIN_VOLUME = 100000           # الحد الأدنى لحجم التداول
+TRADE_AMOUNT_USD = 100.0      # حجم الصفقة بالدولار
+MIN_CHANGE_PCT = 5.0          # رفع شرط الارتفاع إلى +5% لاقتناص الأسهم السريعة فقط
+MIN_VOLUME = 250000           # رفع شرط السيولة إلى 250 ألف سهم لتجنب الأسهم البطئية
 MAX_SPREAD_PCT = 0.8          # الحد الأقصى للسبريد %
 
-# معايير الربحية المحسّنة والخروج الآمن السريع
-QUICK_TAKE_PROFIT_PCT = 0.035 # الهدف الأول السريع (+3.5%)
-MAX_TAKE_PROFIT_PCT = 0.080   # الهدف الأقصى لاقتناص الطفرات (+8.0%)
-STOP_LOSS_PCT = 0.025         # تشديد وقف الخسارة لحماية رأس المال (-2.5%)
+# أهداف الخروج السريع جداً والتدوير
+QUICK_TAKE_PROFIT_PCT = 0.030 # هدف سريع جداً لتأمين الربح اللحظي (+3.0%)
+MAX_TAKE_PROFIT_PCT = 0.070   # الهدف الأقصى عند استمرار الزخم (+7.0%)
+STOP_LOSS_PCT = 0.025         # وقف خسارة مشدد لحماية الحساب (-2.5%)
 
 # ---------------------------------------------------------
 # 2. دوال التليجرام المساعدة
@@ -57,16 +55,16 @@ def send_telegram_recommendation(symbol, price, change_percent, volume, is_exten
     market_phase = "تداول ممتد (Pre/After-Market) 🌙" if is_extended else "الجلسة الرسمية ☀️"
 
     message_text = (
-        f"🟢 <b>فرصة تداول مكثفة ($100)</b> ({market_phase})\n\n"
+        f"⚡ <b>صفقة خاطفة سريعة ($100)</b> ({market_phase})\n\n"
         f"📌 <b>رمز السهم:</b> <code>{escape_html(symbol)}</code>\n"
-        f"⚡ <b>اتجاه الصفقة:</b> شراء اختراق وزخم\n"
-        f"💵 <b>حجم الاستثمار:</b> ${TRADE_AMOUNT_USD:.0f}\n"
-        f"🎯 <b>سعر الدخول اللحظي:</b> ${price:.2f}\n\n"
-        f"📊 <b>التغير الحالي:</b> +{change_percent:.2f}%\n"
-        f"⚡ <b>حجم التداول:</b> {volume:,}\n\n"
-        f"🚀 <b>الهدف السريع الأول (+3.5%):</b> ${target_fast:.2f}\n"
-        f"🏆 <b>الهدف الأقصى الممتد (+8.0%):</b> ${target_max:.2f}\n"
-        f"🛑 <b>سعر وقف الخسارة المشدد (-2.5%):</b> ${stop_loss:.2f}\n"
+        f"🔥 <b>حالة السهم:</b> زخم عالي وسرعة حركة\n"
+        f"💵 <b>حجم الصفقة:</b> ${TRADE_AMOUNT_USD:.0f}\n"
+        f"🎯 <b>سعر الدخول:</b> ${price:.2f}\n\n"
+        f"📊 <b>التغير اللحظي:</b> +{change_percent:.2f}%\n"
+        f"⚡ <b>السيولة والنشاط:</b> {volume:,}\n\n"
+        f"🚀 <b>هدف الخروج الخاطف (+3.0%):</b> ${target_fast:.2f}\n"
+        f"🏆 <b>الهدف الممتد (+7.0%):</b> ${target_max:.2f}\n"
+        f"🛑 <b>وقف الخسارة المشدد (-2.5%):</b> ${stop_loss:.2f}\n"
     )
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -84,13 +82,20 @@ def send_telegram_recommendation(symbol, price, change_percent, volume, is_exten
         return False
 
 # ---------------------------------------------------------
-# 3. محرك تنفيذ التداول الذكي ($100 Extended Hours Engine)
+# 3. محرك تنفيذ التداول الخاطف المباشر
 # ---------------------------------------------------------
 
 def execute_trade(trading_client, symbol, current_price):
     try:
+        # فحص هل نملك مركزاً مفتوحاً حالياً في السهم لتجنب تكرار الأمر في نفس اللحظة
+        positions = trading_client.get_all_positions()
+        for p in positions:
+            if p.symbol == symbol:
+                print(f"ℹ️ {symbol} ممتلوك حالياً بانتظار الهدف.")
+                return False
+
         qty = max(1, int(TRADE_AMOUNT_USD / current_price))
-        limit_price = round(current_price * 1.005, 2)  # سماحية دخول 0.5% لضمان التنفيذ
+        limit_price = round(current_price * 1.005, 2)  # سماحية دخول 0.5% لضمان التنفيذ الفوري
 
         order_data = LimitOrderRequest(
             symbol=symbol,
@@ -102,7 +107,7 @@ def execute_trade(trading_client, symbol, current_price):
         )
 
         order = trading_client.submit_order(order_data)
-        print(f"✅ Alpaca: تم إرسال أمر الشراء بقيمة $100 لـ {symbol} [أمر رقم: {order.id}]")
+        print(f"✅ Alpaca: تم الشراء الخاطف بقيمة $100 في {symbol} [أمر رقم: {order.id}]")
         return True
 
     except Exception as e:
@@ -110,11 +115,11 @@ def execute_trade(trading_client, symbol, current_price):
         return False
 
 # ---------------------------------------------------------
-# 4. محرك إدارة الأرباح الديناميكي والخروج السريع (Exit Logic)
+# 4. محرك إدارة الخروج السريع والدوران (Fast Exit & Re-Entry Logic)
 # ---------------------------------------------------------
 
 def manage_open_positions(trading_client):
-    """ مراقبة الصفقات وإدارتها بربح سريع مع تأمين الخروج من الخسارة """
+    """ مراقبة الصفقات وجني الأرباح الخاطفة وتحرير السيولة فوراً """
     try:
         positions = trading_client.get_all_positions()
         for pos in positions:
@@ -127,7 +132,7 @@ def manage_open_positions(trading_client):
 
             # 1. الخروج بوقف الخسارة المشدد (-2.5%)
             if change_pct <= -STOP_LOSS_PCT:
-                print(f"🚨 تفعيل الخروج الآمن السريع لـ {symbol}: 🛑 وقف خسارة (-2.5%) [السعر: ${current_price:.2f}]")
+                print(f"🚨 خروج سريع من {symbol}: 🛑 وقف خسارة (-2.5%) [السعر: ${current_price:.2f}]")
                 exit_order = LimitOrderRequest(
                     symbol=symbol,
                     qty=qty,
@@ -138,10 +143,10 @@ def manage_open_positions(trading_client):
                 )
                 trading_client.submit_order(exit_order)
 
-            # 2. الخروج بالهدف السريع (+3.5%) أو الأقصى (+8.0%)
+            # 2. الخروج الخاطف بالهدف السريع (+3.0%) أو الممتد (+7.0%)
             elif change_pct >= QUICK_TAKE_PROFIT_PCT:
-                reason = "🏆 اقتناص الهدف الأقصى (+8.0%)" if change_pct >= MAX_TAKE_PROFIT_PCT else "⚡ جني أرباح سريع (+3.5%)"
-                print(f"🚨 تفعيل الخروج المربح لـ {symbol}: {reason} [السعر: ${current_price:.2f}]")
+                reason = "🏆 اقتناص الهدف الممتد (+7.0%)" if change_pct >= MAX_TAKE_PROFIT_PCT else "⚡ جني أرباح خاطف وسريع (+3.0%)"
+                print(f"🚨 تفعيل جني الأرباح الخاطف لـ {symbol}: {reason} [السعر: ${current_price:.2f}]")
                 exit_order = LimitOrderRequest(
                     symbol=symbol,
                     qty=qty,
@@ -153,14 +158,14 @@ def manage_open_positions(trading_client):
                 trading_client.submit_order(exit_order)
 
     except Exception as e:
-        print(f"⚠️ خطأ أثناء مراجعة وإدارة الصفقات المفتوحة: {e}")
+        print(f"⚠️ خطأ أثناء إدارة الصفقات المفتوحة: {e}")
 
 # ---------------------------------------------------------
 # 5. الدالة الرئيسية لتشغيل البوت
 # ---------------------------------------------------------
 
 def run_trading_bot():
-    print(f"🚀 بدء تشغيل محرك التداول المطور بقيمة $100 (Paper={PAPER_TRADING})...")
+    print(f"🚀 بدء تشغيل محرك التداول الخاطف والدوران السريع (Paper={PAPER_TRADING})...")
 
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         print("❌ خطأ: مفاتيح Alpaca غير كافية.")
@@ -170,15 +175,15 @@ def run_trading_bot():
 
     try:
         account = trading_client.get_account()
-        print(f"✅ الاتصال ناجح بـ Alpaca | القوة الشرائية المتاحة: ${account.buying_power}")
+        print(f"✅ الاتصال ناجح بـ Alpaca | القوة الشرائية: ${account.buying_power}")
     except Exception as e:
         print(f"❌ فشل الاتصال بـ Alpaca: {e}")
         return
 
-    # أولاً: إدارة وجني أرباح الصفقات المفتوحة
+    # أولاً: جني الأرباح وتحرير المحفظة
     manage_open_positions(trading_client)
 
-    # ثانياً: فحص القائمة واقتناص الفرص بصفقات $100
+    # ثانياً: اقتناص الأسهم الأكثر سيولة وزخماً
     for symbol in WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
@@ -193,8 +198,9 @@ def run_trading_bot():
 
             change_percent = ((current_price - prev_close) / prev_close) * 100
 
+            # الفلترة الشديدة للسرعة والسيولة
             if change_percent >= MIN_CHANGE_PCT and volume >= MIN_VOLUME and current_price <= 16.0:
-                print(f"🎯 فرصة مكثفة على {symbol}: ارتفاع {change_percent:.2f}% | السعر: ${current_price:.2f}")
+                print(f"🔥 فرصة نارية على {symbol}: ارتفاع {change_percent:.2f}% | السيولة: {volume:,}")
 
                 send_telegram_recommendation(symbol, current_price, change_percent, volume, is_extended=True)
                 execute_trade(trading_client, symbol, current_price)
@@ -202,7 +208,7 @@ def run_trading_bot():
         except Exception as e:
             print(f"⚠️ خطأ أثناء فحص السهم {symbol}: {e}")
 
-    print("🏁 اكتمل المسح والتنفيذ بنجاح.")
+    print("🏁 اكتمل المسح السريع والتنفيذ بنجاح.")
 
 if __name__ == "__main__":
     run_trading_bot()
