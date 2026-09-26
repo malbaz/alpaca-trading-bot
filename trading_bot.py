@@ -165,10 +165,16 @@ def run_trading_bot():
     trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
 
     try:
+        # فحص حالة السوق عبر Alpaca ومنع العمل في العطلات أو الإغلاق
+        clock = trading_client.get_clock()
+        if not clock.is_open:
+            print("⚠️ السوق مغلق حالياً (عطلة نهاية الأسبوع أو خارج ساعات التداول الممتد). لن يتم إرسال تنبيهات.")
+            return
+
         account = trading_client.get_account()
         print(f"الاتصال ناجح بـ Alpaca | القوة الشرائية الحقيقية: ${account.buying_power}")
     except Exception as e:
-        print(f"فشل الاتصال بـ Alpaca: {e}")
+        print(f"فشل الاتصال بـ Alpaca أو جلب حالة السوق: {e}")
         return
 
     # أولاً: جني أرباح الصفقات أو تنفيذ وقف الخسارة
