@@ -2,8 +2,8 @@ import os
 import requests
 import yfinance as yf
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import LimitOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 # ---------------------------------------------------------
 # 1. الإعدادات والتعيين المباشر للتداول الحقيقي الممتد
@@ -75,7 +75,21 @@ def send_telegram_recommendation(symbol, price, change_percent, volume, is_exten
         return False
 
 # ---------------------------------------------------------
-# 3. محرك تنفيذ الشراء المباشر في كافة أوقات السوق
+# 3. دالة إلغاء الأوامر المعلقة القديمة لتحرير الأسهم
+# ---------------------------------------------------------
+
+def cancel_open_orders_for_symbol(trading_client, symbol):
+    try:
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+        open_orders = trading_client.get_orders(req)
+        for order in open_orders:
+            trading_client.cancel_order_by_id(order.id)
+            print(f"تم إلغاء الأمر المعلق السابق {order.id} للسهم {symbol}")
+    except Exception as e:
+        print(f"خطأ أثناء إلغاء الأوامر المعلقة لـ {symbol}: {e}")
+
+# ---------------------------------------------------------
+# 4. محرك تنفيذ الشراء المباشر في كافة أوقات السوق
 # ---------------------------------------------------------
 
 def execute_trade(trading_client, symbol, current_price):
@@ -107,7 +121,7 @@ def execute_trade(trading_client, symbol, current_price):
         return False
 
 # ---------------------------------------------------------
-# 4. محرك إدارة الخروج المباشر في كافة الأوقات
+# 5. محرك إدارة الخروج والتنفيذ المباشر الممتد بدون استثناء
 # ---------------------------------------------------------
 
 def manage_open_positions(trading_client):
@@ -121,38 +135,33 @@ def manage_open_positions(trading_client):
 
             change_pct = (current_price - entry_price) / entry_price
 
-            # 1. الخروج بوقف الخسارة (-2.5%)
-            if change_pct <= -STOP_LOSS_PCT:
-                print(f"خروج من {symbol}: وقف خسارة (-2.5%) [السعر: ${current_price:.2f}]")
-                exit_order = LimitOrderRequest(
-                    symbol=symbol,
-                    qty=qty,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,
-                    limit_price=current_price,
-                    extended_hours=True
-                )
-                trading_client.submit_order(exit_order)
+            # الخروج الفوري عند جني الربح أو كسر وقف الخسارة
+            if change_pct >= QUICK_TAKE_PROFIT_PCT or change_pct <= -STOP_LOSS_PCT:
+                reason = "وقف خسارة (-2.5%)" if change_pct <= -STOP_LOSS_PCT else ("الهدف الممتد (+7.0%)" if change_pct >= MAX_TAKE_PROFIT_PCT else "جني أرباح خاطف (+3.0%)")
+                print(f"تفعيل الخروج المباشر لـ {symbol}: {reason} [السعر الحالي: ${current_price:.2f}]")
 
-            # 2. الخروج بالهدف الخاطف (+3.0%) أو الممتد (+7.0%)
-            elif change_pct >= QUICK_TAKE_PROFIT_PCT:
-                reason = "الهدف الممتد (+7.0%)" if change_pct >= MAX_TAKE_PROFIT_PCT else "جني أرباح خاطف (+3.0%)"
-                print(f"جني أرباح لـ {symbol}: {reason} [السعر: ${current_price:.2f}]")
+                # إلغاء أي أمر معلق قديم يمنع البيع
+                cancel_open_orders_for_symbol(trading_client, symbol)
+
+                # تحديد سعر البيع المباشر لضمان التنفيذ في التداول الممتد
+                sell_limit_price = round(current_price * 0.995, 2) if change_pct <= -STOP_LOSS_PCT else round(current_price, 2)
+
                 exit_order = LimitOrderRequest(
                     symbol=symbol,
                     qty=qty,
                     side=OrderSide.SELL,
                     time_in_force=TimeInForce.DAY,
-                    limit_price=current_price,
+                    limit_price=sell_limit_price,
                     extended_hours=True
                 )
                 trading_client.submit_order(exit_order)
+                print(f"تم إرسال أمر البيع المباشر الممتد لـ {symbol} بسعر ${sell_limit_price}")
 
     except Exception as e:
         print(f"خطأ أثناء إدارة الصفقات المفتوحة: {e}")
 
 # ---------------------------------------------------------
-# 5. الدالة الرئيسية لتشغيل البوت
+# 6. الدالة الرئيسية لتشغيل البوت
 # ---------------------------------------------------------
 
 def run_trading_bot():
@@ -165,10 +174,9 @@ def run_trading_bot():
     trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
 
     try:
-        # فحص حالة السوق عبر Alpaca ومنع العمل في العطلات أو الإغلاق
         clock = trading_client.get_clock()
         if not clock.is_open:
-            print("⚠️ السوق مغلق حالياً (عطلة نهاية الأسبوع أو خارج ساعات التداول الممتد). لن يتم إرسال تنبيهات.")
+            print("السوق مغلق حالياً. لن يتم مسح الأسهم أو إرسال تنبيهات جديدة.")
             return
 
         account = trading_client.get_account()
@@ -177,10 +185,10 @@ def run_trading_bot():
         print(f"فشل الاتصال بـ Alpaca أو جلب حالة السوق: {e}")
         return
 
-    # أولاً: جني أرباح الصفقات أو تنفيذ وقف الخسارة
+    # أولاً: إدارة الصفقات المفتوحة والبيع المباشر فور الوصول للهدف
     manage_open_positions(trading_client)
 
-    # ثانياً: فحص القائمة واقتناص الفرص
+    # ثانياً: فحص القائمة واقتناص الصفقات النارية
     for symbol in WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
