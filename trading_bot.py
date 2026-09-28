@@ -89,7 +89,7 @@ def cancel_open_orders_for_symbol(trading_client, symbol):
         print(f"خطأ أثناء إلغاء الأوامر المعلقة لـ {symbol}: {e}")
 
 # ---------------------------------------------------------
-# 4. محرك تنفيذ الشراء المباشر في كافة أوقات السوق
+# 4. محرك تنفيذ الشراء المباشر
 # ---------------------------------------------------------
 
 def execute_trade(trading_client, symbol, current_price):
@@ -121,29 +121,44 @@ def execute_trade(trading_client, symbol, current_price):
         return False
 
 # ---------------------------------------------------------
-# 5. محرك إدارة الخروج والتنفيذ المباشر الممتد بدون استثناء
+# 5. محرك إدارة الخروج المباشر والبيع الآلي خارج أوقات السوق الرسمية
 # ---------------------------------------------------------
 
 def manage_open_positions(trading_client):
     try:
         positions = trading_client.get_all_positions()
+        if not positions:
+            print("لا توجد مراكز مفتوحة حالياً للبيع.")
+            return
+
         for pos in positions:
             symbol = pos.symbol
             qty = float(pos.qty)
             entry_price = float(pos.avg_entry_price)
-            current_price = float(pos.current_price)
+
+            # جلب السعر اللحظي الفلي عبر yfinance لضمان دقة أسعار Pre-Market
+            try:
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period="2d", interval="1m", prepost=True)
+                if not df.empty:
+                    current_price = float(df['Close'].iloc[-1])
+                else:
+                    current_price = float(pos.current_price)
+            except Exception:
+                current_price = float(pos.current_price)
 
             change_pct = (current_price - entry_price) / entry_price
+            print(f"فحص المركز {symbol}: سعر الدخول ${entry_price:.2f} | السعر اللحظي ${current_price:.2f} | التغير: {change_pct*100:.2f}%")
 
-            # الخروج الفوري عند جني الربح أو كسر وقف الخسارة
+            # شرط الخروج عند تحقيق الربح (+3.0%) أو وقف الخسارة (-2.5%)
             if change_pct >= QUICK_TAKE_PROFIT_PCT or change_pct <= -STOP_LOSS_PCT:
                 reason = "وقف خسارة (-2.5%)" if change_pct <= -STOP_LOSS_PCT else ("الهدف الممتد (+7.0%)" if change_pct >= MAX_TAKE_PROFIT_PCT else "جني أرباح خاطف (+3.0%)")
-                print(f"تفعيل الخروج المباشر لـ {symbol}: {reason} [السعر الحالي: ${current_price:.2f}]")
+                print(f"🚨 تفعيل الخروج المباشر الآلي لـ {symbol}: {reason} [السعر اللحظي: ${current_price:.2f}]")
 
-                # إلغاء أي أمر معلق قديم يمنع البيع
+                # 1. إلغاء أي أمر معلق قديم يمنع البيع
                 cancel_open_orders_for_symbol(trading_client, symbol)
 
-                # تحديد سعر البيع المباشر لضمان التنفيذ في التداول الممتد
+                # 2. تحديد سعر البيع المباشر الممتد
                 sell_limit_price = round(current_price * 0.995, 2) if change_pct <= -STOP_LOSS_PCT else round(current_price, 2)
 
                 exit_order = LimitOrderRequest(
@@ -155,7 +170,7 @@ def manage_open_positions(trading_client):
                     extended_hours=True
                 )
                 trading_client.submit_order(exit_order)
-                print(f"تم إرسال أمر البيع المباشر الممتد لـ {symbol} بسعر ${sell_limit_price}")
+                print(f"✅ تم إرسال أمر البيع المباشر الممتد لـ {symbol} بسعر ${sell_limit_price}")
 
     except Exception as e:
         print(f"خطأ أثناء إدارة الصفقات المفتوحة: {e}")
@@ -174,21 +189,25 @@ def run_trading_bot():
     trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
 
     try:
-        clock = trading_client.get_clock()
-        if not clock.is_open:
-            print("السوق مغلق حالياً. لن يتم مسح الأسهم أو إرسال تنبيهات جديدة.")
-            return
-
         account = trading_client.get_account()
         print(f"الاتصال ناجح بـ Alpaca | القوة الشرائية الحقيقية: ${account.buying_power}")
     except Exception as e:
-        print(f"فشل الاتصال بـ Alpaca أو جلب حالة السوق: {e}")
+        print(f"فشل الاتصال بـ Alpaca: {e}")
         return
 
-    # أولاً: إدارة الصفقات المفتوحة والبيع المباشر فور الوصول للهدف
+    # أولاً: تشغيل محرك إدارة الصفقات والبيع المباشر أولاً وبدون شروط على حالة السوق
     manage_open_positions(trading_client)
 
-    # ثانياً: فحص القائمة واقتناص الصفقات النارية
+    # ثانياً: فحص حالة السوق لشراء صفقات جديدة فقط
+    try:
+        clock = trading_client.get_clock()
+        if not clock.is_open:
+            print("ملاحظة: الجلسة الرسمية مغلقة. تم إنجاز بيع الصفقات المستهدفة ولن يتم فتح شراء لأسهم جديدة خارج ساعات الجلسة.")
+            return
+    except Exception as e:
+        print(f"ملاحظة عند فحص ساعة السوق: {e}")
+
+    # ثالثاً: فحص القائمة واقتناص الصفقات الجديدة أثناء عمل السوق
     for symbol in WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
