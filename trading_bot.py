@@ -14,7 +14,7 @@ ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# ضبط التداول الحقيقي المباشر قاطعاً (False = حقيقي / True = تجريبي)
+# ضبط التداول الحقيقي المباشر (False = حقيقي / True = تجريبي)
 PAPER_TRADING = False
 
 # قائمة الأسهم الشرعية وتحت $16
@@ -26,7 +26,7 @@ WATCHLIST = [
     "BFLY", "EAF", "IPDN", "WFCF", "CPOP", "LGHL"
 ]
 
-TRADE_AMOUNT_USD = 100.0      # حجم الصفقة بالدولار
+TARGET_TRADE_AMOUNT_USD = 100.0 # المستهدف الافتراضي للصفقة
 MIN_CHANGE_PCT = 4.0          # الحد الأدنى للارتفاع %
 MIN_VOLUME = 150000           # الحد الأدنى لحجم التداول
 
@@ -42,7 +42,7 @@ STOP_LOSS_PCT = 0.025         # وقف خسارة مشدد (-2.5%)
 def escape_html(text):
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def send_telegram_recommendation(symbol, price, change_percent, volume, is_extended=False):
+def send_telegram_recommendation(symbol, price, change_percent, volume, actual_budget, is_extended=False):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
 
@@ -53,9 +53,9 @@ def send_telegram_recommendation(symbol, price, change_percent, volume, is_exten
     market_phase = "تداول ممتد (Pre/After-Market)" if is_extended else "الجلسة الرسمية"
 
     message_text = (
-        f"صفقة خاطفة حقيقية ($100) ({market_phase})\n\n"
+        f"صفقة خاطفة حقيقية (${actual_budget:.2f}) ({market_phase})\n\n"
         f"رمز السهم: <code>{escape_html(symbol)}</code>\n"
-        f"حجم الصفقة: ${TRADE_AMOUNT_USD:.0f}\n"
+        f"مبلغ الصفقة المستغل: ${actual_budget:.2f}\n"
         f"سعر الدخول: ${price:.2f}\n\n"
         f"التغير اللحظي: +{change_percent:.2f}%\n"
         f"حجم التداول: {volume:,}\n\n"
@@ -89,7 +89,7 @@ def cancel_open_orders_for_symbol(trading_client, symbol):
         print(f"خطأ أثناء إلغاء الأوامر المعلقة لـ {symbol}: {e}")
 
 # ---------------------------------------------------------
-# 4. محرك تنفيذ الشراء المباشر
+# 4. محرك تنفيذ الشراء الديناميكي وفق السيولة المتاحة
 # ---------------------------------------------------------
 
 def execute_trade(trading_client, symbol, current_price):
@@ -100,7 +100,17 @@ def execute_trade(trading_client, symbol, current_price):
                 print(f"{symbol} مملوك حالياً بانتظار تحقيق الهدف.")
                 return False
 
-        qty = max(1, int(TRADE_AMOUNT_USD / current_price))
+        account = trading_client.get_account()
+        buying_power = float(account.buying_power)
+
+        # تخصيص الميزانية بناءً على السيولة النقدية الفعلية المتاحة
+        trade_budget = min(TARGET_TRADE_AMOUNT_USD, buying_power)
+
+        if trade_budget < 10.0:
+            print(f"القوة الشرائية غير كافية للتداول: ${buying_power:.2f}")
+            return False
+
+        qty = max(1, int(trade_budget / current_price))
         limit_price = round(current_price * 1.005, 2)
 
         order_data = LimitOrderRequest(
@@ -113,7 +123,7 @@ def execute_trade(trading_client, symbol, current_price):
         )
 
         order = trading_client.submit_order(order_data)
-        print(f"Alpaca (حقيقي): تم الشراء بـ $100 في {symbol} [أمر رقم: {order.id}]")
+        print(f"Alpaca (حقيقي): تم الشراء بمبلغ ${trade_budget:.2f} (عدد {qty} سهم) في {symbol} [أمر رقم: {order.id}]")
         return True
 
     except Exception as e:
@@ -136,7 +146,6 @@ def manage_open_positions(trading_client):
             qty = float(pos.qty)
             entry_price = float(pos.avg_entry_price)
 
-            # جلب السعر اللحظي الفلي عبر yfinance لضمان دقة أسعار Pre-Market
             try:
                 ticker = yf.Ticker(symbol)
                 df = ticker.history(period="2d", interval="1m", prepost=True)
@@ -150,15 +159,12 @@ def manage_open_positions(trading_client):
             change_pct = (current_price - entry_price) / entry_price
             print(f"فحص المركز {symbol}: سعر الدخول ${entry_price:.2f} | السعر اللحظي ${current_price:.2f} | التغير: {change_pct*100:.2f}%")
 
-            # شرط الخروج عند تحقيق الربح (+3.0%) أو وقف الخسارة (-2.5%)
             if change_pct >= QUICK_TAKE_PROFIT_PCT or change_pct <= -STOP_LOSS_PCT:
                 reason = "وقف خسارة (-2.5%)" if change_pct <= -STOP_LOSS_PCT else ("الهدف الممتد (+7.0%)" if change_pct >= MAX_TAKE_PROFIT_PCT else "جني أرباح خاطف (+3.0%)")
-                print(f"🚨 تفعيل الخروج المباشر الآلي لـ {symbol}: {reason} [السعر اللحظي: ${current_price:.2f}]")
+                print(f"تفعيل الخروج المباشر الآلي لـ {symbol}: {reason} [السعر اللحظي: ${current_price:.2f}]")
 
-                # 1. إلغاء أي أمر معلق قديم يمنع البيع
                 cancel_open_orders_for_symbol(trading_client, symbol)
 
-                # 2. تحديد سعر البيع المباشر الممتد
                 sell_limit_price = round(current_price * 0.995, 2) if change_pct <= -STOP_LOSS_PCT else round(current_price, 2)
 
                 exit_order = LimitOrderRequest(
@@ -170,7 +176,7 @@ def manage_open_positions(trading_client):
                     extended_hours=True
                 )
                 trading_client.submit_order(exit_order)
-                print(f"✅ تم إرسال أمر البيع المباشر الممتد لـ {symbol} بسعر ${sell_limit_price}")
+                print(f"تم إرسال أمر البيع المباشر الممتد لـ {symbol} بسعر ${sell_limit_price}")
 
     except Exception as e:
         print(f"خطأ أثناء إدارة الصفقات المفتوحة: {e}")
@@ -195,10 +201,8 @@ def run_trading_bot():
         print(f"فشل الاتصال بـ Alpaca: {e}")
         return
 
-    # أولاً: تشغيل محرك إدارة الصفقات والبيع المباشر أولاً وبدون شروط على حالة السوق
     manage_open_positions(trading_client)
 
-    # ثانياً: فحص حالة السوق لشراء صفقات جديدة فقط
     try:
         clock = trading_client.get_clock()
         if not clock.is_open:
@@ -207,7 +211,6 @@ def run_trading_bot():
     except Exception as e:
         print(f"ملاحظة عند فحص ساعة السوق: {e}")
 
-    # ثالثاً: فحص القائمة واقتناص الصفقات الجديدة أثناء عمل السوق
     for symbol in WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
@@ -225,7 +228,11 @@ def run_trading_bot():
             if change_percent >= MIN_CHANGE_PCT and volume >= MIN_VOLUME and current_price <= 16.0:
                 print(f"فرصة على {symbol}: ارتفاع {change_percent:.2f}% | السيولة: {volume:,}")
 
-                send_telegram_recommendation(symbol, current_price, change_percent, volume, is_extended=True)
+                account = trading_client.get_account()
+                buying_power = float(account.buying_power)
+                actual_budget = min(TARGET_TRADE_AMOUNT_USD, buying_power)
+
+                send_telegram_recommendation(symbol, current_price, change_percent, volume, actual_budget, is_extended=True)
                 execute_trade(trading_client, symbol, current_price)
 
         except Exception as e:
