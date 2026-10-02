@@ -22,7 +22,7 @@ WATCHLIST = [
     "ONCY", "ABVC", "TLSI", "DBRG", "AMIX", "DAIC", "VEEA", 
     "FTFT", "SOUN", "BBAI", "LUNR", "SERV", "BZFD", "QNST", 
     "SHIP", "CWCO", "BNAI", "AISP", "KULR", "RIG", "GTEC", 
-    "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF"
+    "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF", "SDEV"
 ]
 
 TARGET_TRADE_AMOUNT_USD = 100.0 # الميزانية المستهدفة للصفقة
