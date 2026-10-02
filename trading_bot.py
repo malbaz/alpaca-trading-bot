@@ -37,7 +37,7 @@ MAX_TAKE_PROFIT_PCT = 0.080   # الهدف الممتد (+8.0%)
 STOP_LOSS_PCT = 0.035         # وقف خسارة مدروس (-3.5%)
 
 # ---------------------------------------------------------
-# 2. إرسال التنبيهات عبر التليجرام بالتنسيق الكامل
+# 2. إرسال التنبيهات عبر التليجرام بالتنسيق الكامل والأيقونات
 # ---------------------------------------------------------
 
 def escape_html(text):
@@ -62,8 +62,8 @@ def send_telegram_recommendation(symbol, price, change_percent, volume, actual_b
         f"🎯 <b>سعر الدخول:</b> ${price:.2f}\n\n"
         f"📊 <b>التغير اللحظي:</b> +{change_percent:.2f}%\n"
         f"⚡ <b>السيولة والنشاط:</b> {volume:,}\n\n"
-        f"🚀 <b>هدف الخروج الخاطف (+{QUICK_TAKE_PROFIT_PCT*100:.1f}%):</b>\n${target_fast:.2f}\n"
-        f"🏆 <b>الهدف الممتد (+{MAX_TAKE_PROFIT_PCT*100:.1f}%):</b> ${target_max:.2f}\n"
+        f"🚀 <b>هدف الخروج الخاطف (+{QUICK_TAKE_PROFIT_PCT*100:.1f}%):</b>\n${target_fast:.2f}\n\n"
+        f"🏆 <b>الهدف الممتد (+{MAX_TAKE_PROFIT_PCT*100:.1f}%):</b> ${target_max:.2f}\n\n"
         f"🚨 <b>وقف الخسارة المشدد (-{STOP_LOSS_PCT*100:.1f}%):</b>\n${stop_loss:.2f}\n"
     )
 
@@ -107,8 +107,8 @@ def execute_trade(trading_client, symbol, current_price):
         buying_power = float(account.buying_power)
         trade_budget = min(TARGET_TRADE_AMOUNT_USD, buying_power)
 
-        if trade_budget < 10.0:
-            print(f"القوة الشرائية غير كافية: ${buying_power:.2f}")
+        if trade_budget < 15.0:
+            print(f"القوة الشرائية غير كافية للتداول: ${buying_power:.2f}")
             return False
 
         qty = max(1, int(trade_budget / current_price))
@@ -202,7 +202,7 @@ def run_trading_bot():
     # 1. إدارة الصفقات المفتوحة أولاً والبيع المباشر فور الوصول للهدف
     manage_open_positions(trading_client)
 
-    # 2. فحص توفر كاش كافي لفتح صفقة جديدة
+    # 2. فحص توفر كاش كافي لفتح صفقة جديدة (حد أدنى 15 دولار)
     buying_power = float(account.buying_power)
     if buying_power < 15.0:
         print("السيولة غير كافية لفتح صفقات جديدة.")
