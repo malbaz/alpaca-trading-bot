@@ -6,7 +6,7 @@ from alpaca.trading.requests import LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 # ---------------------------------------------------------
-# 1. الإعدادات والتعيين المباشر
+# 1. الإعدادات وقائمة الأسهم المحدثة من الصور المرفقة
 # ---------------------------------------------------------
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
@@ -17,16 +17,21 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 # التداول الحقيقي المباشر (False = حقيقي / True = تجريبي)
 PAPER_TRADING = False
 
-# قائمة الأسهم المفلترة (استبعاد الأسهم الأقل من 1.50$ لمنع الانزلاق السعري)
+# قائمة الأسهم المحدثة والمنتقاة بعناية من الشاشات المرفقة
 WATCHLIST = [
-    "ONCY", "ABVC", "TLSI", "DBRG", "AMIX", "DAIC", "VEEA", 
-    "FTFT", "SOUN", "BBAI", "LUNR", "SERV", "BZFD", "QNST", 
-    "SHIP", "CWCO", "BNAI", "AISP", "KULR", "RIG", "GTEC", 
-    "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF", "SDEV"
+    # الأسهم النارية الجديدة المضافة من القائمة الأخية
+    "EEIQ", "HSCS", "CVM", "EFOI", "CSAI", "LONA", "AZ", "JDZG", 
+    "RTB", "LNZA", "MTNB", "IDAI", "AIRG", "BMHL", "PICS", "RGC", 
+    "HYLN", "FISN", "CJMB", "BTLN", "INTS", "DFNS", "OSG", "EP", 
+    "CTNT", "DDD", "RXT", "SOC", "CUVL", "SOTK", "KOPN", "SHIM",
+    # أسهم القوائم السابقة المتميزة
+    "OPTX", "INDP", "ATRA", "MYGN", "NFE", "ABLV", "GRDX", "WVVI",
+    "AMOD", "SDEV", "AIXI", "ZNB", "CYCU", "GOW", "PMI", "NNBR", 
+    "NAUT", "ICU", "REBN", "NEOV", "FEAM", "SSM", "IMC", "CELU"
 ]
 
 TARGET_TRADE_AMOUNT_USD = 100.0 # الميزانية المستهدفة للصفقة
-MIN_PRICE = 1.50              # استبعاد الأسهم المنخفضة السعر جداً
+MIN_PRICE = 1.50              # استبعاد الأسهم المنخفضة السعر جداً لمنع الانزلاق
 MAX_PRICE = 16.00             # السقف الأقصى لسعر السهم
 MIN_CHANGE_PCT = 3.5          # نسبة الارتفاع اللحظي المطلوبة %
 MIN_VOLUME = 200000           # الحد الأدنى لحجم السيولة
@@ -37,7 +42,7 @@ MAX_TAKE_PROFIT_PCT = 0.080   # الهدف الممتد (+8.0%)
 STOP_LOSS_PCT = 0.035         # وقف خسارة مدروس (-3.5%)
 
 # ---------------------------------------------------------
-# 2. إرسال التنبيهات عبر التليجرام بالتنسيق الكامل والأيقونات
+# 2. إرسال التنبيهات عبر التليجرام بالتنسيق المنسق المزود بالأيقونات
 # ---------------------------------------------------------
 
 def escape_html(text):
