@@ -6,7 +6,7 @@ from alpaca.trading.requests import LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 # ---------------------------------------------------------
-# 1. الإعدادات وقائمة الأسهم المحدثة من الصور المرفقة
+# 1. الإعدادات وقائمة الأسهم المحدثة الشاملة
 # ---------------------------------------------------------
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
@@ -17,17 +17,24 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 # التداول الحقيقي المباشر (False = حقيقي / True = تجريبي)
 PAPER_TRADING = False
 
-# قائمة الأسهم المحدثة والمنتقاة بعناية من الشاشات المرفقة
+# القائمة الشاملة الموحدة للأسهم الشرعية والمميزة ذات الزخم
 WATCHLIST = [
-    # الأسهم النارية الجديدة المضافة من القائمة الأخية
+    # الأسهم المضافة حديثاً من شاشات B و A
+    "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
+    "AYTU", "AVO", "AVPT",
+    # الأسهم المميزة المعتمدة سابقاً
+    "AMOD", "NSTR", "AIXI", "CYCU", "PMI", "AMPL", "AMPX", "ABSI", 
+    "AMBO", "AEYE", "AIOT", "AENT", "ADTN", "ABEO", "ABTE", "ZNB",
     "EEIQ", "HSCS", "CVM", "EFOI", "CSAI", "LONA", "AZ", "JDZG", 
     "RTB", "LNZA", "MTNB", "IDAI", "AIRG", "BMHL", "PICS", "RGC", 
     "HYLN", "FISN", "CJMB", "BTLN", "INTS", "DFNS", "OSG", "EP", 
     "CTNT", "DDD", "RXT", "SOC", "CUVL", "SOTK", "KOPN", "SHIM",
-    # أسهم القوائم السابقة المتميزة
     "OPTX", "INDP", "ATRA", "MYGN", "NFE", "ABLV", "GRDX", "WVVI",
-    "AMOD", "SDEV", "AIXI", "ZNB", "CYCU", "GOW", "PMI", "NNBR", 
-    "NAUT", "ICU", "REBN", "NEOV", "FEAM", "SSM", "IMC", "CELU"
+    "SDEV", "GOW", "NNBR", "NAUT", "ICU", "REBN", "NEOV", "FEAM", 
+    "SSM", "IMC", "CELU", "ONCY", "ABVC", "TLSI", "DBRG", "AMIX", 
+    "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV", "BZFD", 
+    "QNST", "SHIP", "CWCO", "BNAI", "AISP", "KULR", "RIG", "GTEC", 
+    "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF"
 ]
 
 TARGET_TRADE_AMOUNT_USD = 100.0 # الميزانية المستهدفة للصفقة
@@ -42,7 +49,7 @@ MAX_TAKE_PROFIT_PCT = 0.080   # الهدف الممتد (+8.0%)
 STOP_LOSS_PCT = 0.035         # وقف خسارة مدروس (-3.5%)
 
 # ---------------------------------------------------------
-# 2. إرسال التنبيهات عبر التليجرام بالتنسيق المنسق المزود بالأيقونات
+# 2. إرسال التنبيهات عبر التليجرام بالتنسيق الكامل
 # ---------------------------------------------------------
 
 def escape_html(text):
