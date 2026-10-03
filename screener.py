@@ -1,5 +1,4 @@
 import os
-import time
 import requests
 import yfinance as yf
 
@@ -10,21 +9,23 @@ import yfinance as yf
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# القائمة الشاملة للأسهم المميزة والشرعية ذات الزخم المرتفع
+# القائمة الشاملة الموحدة المطابقة لبوت التداول
 WATCHLIST = [
-    # الأسهم النارية المضافة حديثاً
+    # الأسهم المضافة حديثاً من شاشات B و A
+    "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
+    "AYTU", "AVO", "AVPT",
+    # الأسهم المميزة المعتمدة سابقاً
+    "AMOD", "NSTR", "AIXI", "CYCU", "PMI", "AMPL", "AMPX", "ABSI", 
+    "AMBO", "AEYE", "AIOT", "AENT", "ADTN", "ABEO", "ABTE", "ZNB",
     "EEIQ", "HSCS", "CVM", "EFOI", "CSAI", "LONA", "AZ", "JDZG", 
     "RTB", "LNZA", "MTNB", "IDAI", "AIRG", "BMHL", "PICS", "RGC", 
     "HYLN", "FISN", "CJMB", "BTLN", "INTS", "DFNS", "OSG", "EP", 
     "CTNT", "DDD", "RXT", "SOC", "CUVL", "SOTK", "KOPN", "SHIM",
-    # أسهم الزخم المتميزة
     "OPTX", "INDP", "ATRA", "MYGN", "NFE", "ABLV", "GRDX", "WVVI",
-    "AMOD", "SDEV", "AIXI", "ZNB", "CYCU", "GOW", "PMI", "NNBR", 
-    "NAUT", "ICU", "REBN", "NEOV", "FEAM", "SSM", "IMC", "CELU",
-    # الأسهم الشرعية النشطة
-    "ONCY", "ABVC", "TLSI", "DBRG", "AMIX", "DAIC", "VEEA", 
-    "FTFT", "SOUN", "BBAI", "LUNR", "SERV", "BZFD", "QNST", 
-    "SHIP", "CWCO", "BNAI", "AISP", "KULR", "RIG", "GTEC", 
+    "SDEV", "GOW", "NNBR", "NAUT", "ICU", "REBN", "NEOV", "FEAM", 
+    "SSM", "IMC", "CELU", "ONCY", "ABVC", "TLSI", "DBRG", "AMIX", 
+    "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV", "BZFD", 
+    "QNST", "SHIP", "CWCO", "BNAI", "AISP", "KULR", "RIG", "GTEC", 
     "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF"
 ]
 
@@ -95,7 +96,6 @@ def run_market_scanner():
     for symbol in WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
-            # جلب البيانات اللحظية لدقيقة واحدة متضمنة الفترات الممتدة
             df = ticker.history(period="1d", interval="1m", prepost=True)
 
             if df.empty or len(df) < 10:
