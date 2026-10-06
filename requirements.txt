@@ -3,5 +3,6 @@ gunicorn
 requests
 python-dotenv
 alpaca-py
-APScheduler
 yfinance
+websockets
+asyncio
