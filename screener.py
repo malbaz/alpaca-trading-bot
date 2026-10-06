@@ -21,7 +21,7 @@ WATCHLIST = [
     "SSM", "IMC", "CELU", "ONCY", "ABVC", "TLSI", "DBRG", "AMIX", 
     "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", "LUNR", "SERV", "BZFD", 
     "QNST", "SHIP", "CWCO", "BNAI", "AISP", "KULR", "RIG", "GTEC", 
-    "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF"
+    "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF", "MOBX"
 ]
 
 def run_screener():
