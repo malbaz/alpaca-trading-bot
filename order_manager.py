@@ -53,7 +53,7 @@ class OrderManager:
                 for sym, state in active_symbols.items():
                     self.symbol_states[sym] = state
                     
-                # إعادة إعادة إرسال الأسهم غير الموجودة لدى الوسيط كـ NONE
+                # إعادة ضبط الأسهم غير الموجودة لدى الوسيط كـ NONE
                 for sym in list(self.symbol_states.keys()):
                     if self.symbol_states[sym] == "OPEN_POSITION" and sym not in active_symbols:
                         self.symbol_states[sym] = "NONE"
@@ -139,7 +139,7 @@ class OrderManager:
                 self.set_symbol_state(symbol, "NONE")
                 return {"status": "rejected", "reason": f"لا يوجد مركز مفتوح لـ {symbol} لدى الوسيط"}
 
-            qty = float(target_pos.qty)
+            qty = int(float(target_pos.qty))
             sell_limit_price = round(price * 0.990, 2)
             client_order_id = f"bot_sell_{symbol}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
 
