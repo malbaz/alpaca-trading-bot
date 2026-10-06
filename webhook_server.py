@@ -1,36 +1,19 @@
 import os
 import requests
 from flask import Flask, request, jsonify
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import LimitOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from order_manager import order_manager
+from risk_engine import risk_engine
 
 app = Flask(__name__)
 
 # ---------------------------------------------------------
-# 1. الإعدادات والربط
+# الإعدادات الحماية والتنبيهات
 # ---------------------------------------------------------
-
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-# كلمة السر الخاصة بالتحقق من أمان TradingView Webhook
 WEBHOOK_SECRET = "Murray@@2026++"
 
-# الميزانية ونسب وقف الخسارة المحدثة
-TARGET_TRADE_AMOUNT_USD = 50.0 # خفض ميزانية الصفقة إلى 50.00$
-QUICK_TAKE_PROFIT_PCT = 0.045  # هدف خروج +4.5%
-STOP_LOSS_PCT = 0.025          # وقف خسارة مشدد -2.5%
-
-trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=False)
-
-# ---------------------------------------------------------
-# 2. دالة إرسال تنبيهات التليجرام
-# ---------------------------------------------------------
-
-def send_telegram_msg(msg_text):
+def send_telegram_msg(msg_text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -40,98 +23,67 @@ def send_telegram_msg(msg_text):
     except Exception as e:
         print(f"خطأ تليجرام: {e}")
 
-# ---------------------------------------------------------
-# 3. نقطة استقبال التنبيهات (Webhook Endpoint)
-# ---------------------------------------------------------
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({"status": "error", "message": "No JSON payload received"}), 400
+            return jsonify({"status": "error", "message": "No JSON payload"}), 400
 
-        # التحقق من كلمة السر للحماية
+        # 1. التحقق من كلمة سر التنبيه
         if data.get("secret") != WEBHOOK_SECRET:
-            return jsonify({"status": "error", "message": "Unauthorized secret"}), 401
+            return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
         symbol = str(data.get("symbol", "")).upper()
-        action = str(data.get("action", "")).lower() # buy أو sell
+        action = str(data.get("action", "")).lower()
         price = float(data.get("price", 0.0))
+        bid = float(data.get("bid", price * 0.999))
+        ask = float(data.get("ask", price * 1.001))
 
-        if not symbol or not price:
+        if not symbol or price <= 0:
             return jsonify({"status": "error", "message": "Invalid symbol or price"}), 400
 
-        # --- حالة تنفيذ الشراء (BUY) ---
+        # --- تنفيذ الشراء عبر OrderManager & RiskEngine ---
         if action == "buy":
-            account = trading_client.get_account()
-            buying_power = float(account.buying_power)
-            trade_budget = min(TARGET_TRADE_AMOUNT_USD, buying_power)
+            # 2. فحص المخاطر أولاً (Daily Loss Limit + Spread)
+            if not risk_engine.is_trade_allowed(symbol, bid, ask):
+                send_telegram_msg(f"🛑 <b>تنبيه مرفوض من محرك المخاطر:</b> {symbol} (تجاوز السبريد أو حد الخسارة اليومي)")
+                return jsonify({"status": "rejected", "reason": "Risk check failed"}), 400
 
-            if trade_budget < 15.0:
-                send_telegram_msg(f"⚠️ <b>TradingView Signal:</b> القوة الشرائية غير كافية للشراء في {symbol}.")
-                return jsonify({"status": "error", "message": "Insufficient funds"}), 400
+            # 3. إرسال أمر الشراء لـ OrderManager الموحد
+            result = order_manager.process_buy_signal(symbol, price, budget=50.0)
 
-            qty = max(1, int(trade_budget / price))
-            limit_price = round(price * 1.002, 2)
+            if result.get("status") == "executed":
+                msg = (
+                    f"📡 <b>إشارة شـراء TradingView (منفذة آلياً)</b>\n\n"
+                    f"📌 <b>الرمز:</b> <code>{symbol}</code>\n"
+                    f"🎯 <b>السعر:</b> ${price:.2f}\n"
+                    f"📦 <b>الكمية:</b> {result.get('qty')} سهم\n"
+                    f"🆔 <b>رقم الأمر المحمي:</b> <code>{result.get('order_id')}</code>\n"
+                )
+                send_telegram_msg(msg)
+                return jsonify(result), 200
+            else:
+                send_telegram_msg(f"⚠️ <b>رفض الشراء لـ {symbol}:</b> {result.get('reason')}")
+                return jsonify(result), 400
 
-            order = LimitOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,
-                limit_price=limit_price,
-                extended_hours=True
-            )
-            trading_client.submit_order(order)
-
-            # حساب الأهداف للتنبيه
-            target_fast = round(price * (1 + QUICK_TAKE_PROFIT_PCT), 2)
-            stop_loss = round(price * (1 - STOP_LOSS_PCT), 2)
-
-            msg = (
-                f"📡 <b>إشارة تنبيه TradingView (شراء)</b>\n\n"
-                f"📌 <b>الرمز:</b> <code>{symbol}</code>\n"
-                f"🎯 <b>سعر الدخول:</b> ${price:.2f}\n"
-                f"💵 <b>الميزانية المخصصة:</b> ${trade_budget:.2f} (عدد {qty} سهم)\n"
-                f"🚀 <b>هدف الربح الخاطف (+4.5%):</b> ${target_fast:.2f}\n"
-                f"🚨 <b>وقف الخسارة (-2.5%):</b> ${stop_loss:.2f}\n"
-            )
-            send_telegram_msg(msg)
-            return jsonify({"status": "success", "action": "buy_executed", "symbol": symbol, "qty": qty}), 200
-
-        # --- حالة تنفيذ البيع / الخروج (SELL) ---
+        # --- تنفيذ البيع عبر OrderManager الموحد ---
         elif action == "sell":
-            positions = trading_client.get_all_positions()
-            for pos in positions:
-                if pos.symbol == symbol:
-                    qty = float(pos.qty)
-                    sell_limit_price = round(price * 0.990, 2)
-
-                    exit_order = LimitOrderRequest(
-                        symbol=symbol,
-                        qty=qty,
-                        side=OrderSide.SELL,
-                        time_in_force=TimeInForce.DAY,
-                        limit_price=sell_limit_price,
-                        extended_hours=True
-                    )
-                    trading_client.submit_order(exit_order)
-
-                    msg = (
-                        f"🚨 <b>إشارة خروج TradingView (بيع)</b>\n\n"
-                        f"📌 <b>الرمز:</b> <code>{symbol}</code>\n"
-                        f"🎯 <b>سعر البيع:</b> ${price:.2f}\n"
-                        f"📦 <b>الكمية المباعة:</b> {qty} سهم\n"
-                    )
-                    send_telegram_msg(msg)
-                    return jsonify({"status": "success", "action": "sell_executed", "symbol": symbol}), 200
-
-            return jsonify({"status": "ignored", "message": "No open position to sell"}), 200
+            result = order_manager.process_sell_signal(symbol, price, reason="TradingView Alert")
+            if result.get("status") == "executed":
+                msg = (
+                    f"🚨 <b>إشارة بـيع TradingView (منفذة)</b>\n\n"
+                    f"📌 <b>الرمز:</b> <code>{symbol}</code>\n"
+                    f"🎯 <b>السعر:</b> ${price:.2f}\n"
+                    f"📦 <b>الكمية:</b> {result.get('qty')} سهم\n"
+                )
+                send_telegram_msg(msg)
+                return jsonify(result), 200
+            else:
+                return jsonify(result), 400
 
     except Exception as e:
         print(f"Webhook Error: {e}")
-        send_telegram_msg(f"❌ <b>خطأ تنفيذي في Webhook:</b> {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
