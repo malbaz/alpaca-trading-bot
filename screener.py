@@ -5,6 +5,7 @@ from datetime import datetime
 from order_manager import order_manager
 from risk_engine import risk_engine
 
+# قائمة الـ 101 سهم المعتمدة للمراقبة
 WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
     "AYTU", "AVO", "AVPT", "AMOD", "NSTR", "AIXI", "CYCU", "PMI", 
@@ -22,14 +23,15 @@ WATCHLIST = [
 ]
 
 def run_screener():
-    print("🔍 بدء مسح الفلاتر المتقدمة (يشمل فترات Pre-Market و After-Hours)...")
+    print("🔍 بدء مسح الفلاتر المتقدمة (يشمل Pre-Market والأسهم من $1.00)...")
     
+    # مطابقة المراكز الحقيقية مع ذاكرة البوت
     order_manager.reconcile_positions()
 
     for symbol in WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
-            # prepost=True لتغطية الفترات الممتدة
+            # prepost=True لتغطي البيانات فترات التداول الممتدة
             df = ticker.history(period="1d", interval="1m", prepost=True)
             if df.empty or len(df) < 5:
                 continue
@@ -38,27 +40,30 @@ def run_screener():
             price_5m_ago = float(df['Close'].iloc[-min(5, len(df))])
             volume_sum = int(df['Volume'].iloc[-10:].sum())
 
-            # التعديل للسماح بأسهم تبدأ من 1.00 دولار
-if not (1.00 <= current_price <= 16.00):
-    continue
+            # نطاق السعر المعدل: من 1.00 دولار حتى 16.00 دولار
+            if not (1.00 <= current_price <= 16.00):
+                continue
 
+            # حساب نسبة الزخم خلال آخر 5 دقائق
             momentum_pct = ((current_price - price_5m_ago) / price_5m_ago) * 100
 
-            # مرونة حجم التداول خلال الفترات الممتدة (50K سهم كافي خارج الأوقات الرسمية)
+            # شرط الحجم (مرن ليتماشى مع التداول الممتد وقبل الافتتاح)
             min_volume = 50000 
 
             if momentum_pct >= 3.0 and volume_sum >= min_volume:
-                print(f"🔥 فرصة مكتشفة: {symbol} (+{momentum_pct:.2f}%) | الحجم: {volume_sum}")
+                print(f"🔥 فرصة مكتشفة: {symbol} (+{momentum_pct:.2f}%) | السعر: ${current_price} | الحجم: {volume_sum}")
                 
                 bid = current_price * 0.995
                 ask = current_price * 1.005
 
+                # التحقق عبر محرك المخاطر أولاً
                 if risk_engine.is_trade_allowed(symbol, bid, ask):
+                    # إرسال أمر الشراء لمدير الأوامر الموحد
                     result = order_manager.process_buy_signal(symbol, current_price, budget=50.0)
                     print(f"نتيجة التنفيذ لـ {symbol}: {result}")
 
         except Exception as e:
-            print(f"خطأ فحص السهم {symbol}: {e}")
+            print(f"خطأ أثناء فحص السهم {symbol}: {e}")
 
 if __name__ == "__main__":
     run_screener()
