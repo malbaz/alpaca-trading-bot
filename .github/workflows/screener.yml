@@ -1,32 +1,27 @@
 name: Market Screener Bot
 
 on:
-  # schedule:
-  #   - cron: '*/15 13-21 * * 1-5'
+  schedule:
+    # يعمل كل 15 دقيقة من الساعة 8:00 صباحاً حتى 11:00 مساءً (UTC)
+    # يغطي Pre-Market والجلسة الرسمية بتوقيت الرياض
+    - cron: '*/15 8-20 * * 1-5'
   workflow_dispatch:
 
 jobs:
   run-screener:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests yfinance alpaca-py
-
-      - name: Run Market Screener
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Screener
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python screener.py
