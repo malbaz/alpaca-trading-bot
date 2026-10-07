@@ -38,8 +38,9 @@ def run_screener():
             price_5m_ago = float(df['Close'].iloc[-min(5, len(df))])
             volume_sum = int(df['Volume'].iloc[-10:].sum())
 
-            if not (1.50 <= current_price <= 16.00):
-                continue
+            # التعديل للسماح بأسهم تبدأ من 1.00 دولار
+if not (1.00 <= current_price <= 16.00):
+    continue
 
             momentum_pct = ((current_price - price_5m_ago) / price_5m_ago) * 100
 
