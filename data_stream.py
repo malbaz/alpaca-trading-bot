@@ -5,30 +5,36 @@ from alpaca.data.enums import DataFeed
 from order_manager import order_manager
 from risk_engine import risk_engine
 
-# جلب وتنظيف المفاتيح من المتغيرات البيئية
+# جلب المفاتيح وتنظيف المسافات
 API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 
-# التمييز التلقائي بين مفاتيح Paper والحساب الحقيقي Live
+# التمييز بين نوع الحساب (Paper أم Live)
 is_paper = API_KEY.startswith("PK")
 
-if is_paper:
-    print("⚠️ استخدام مفاتيح حساب تجريبي (Paper Keys)...", flush=True)
-    stream = StockDataStream(
-        api_key=API_KEY, 
-        secret_key=SECRET_KEY, 
-        feed=DataFeed.IEX,
-        raw_data=True
-    )
-else:
-    print("✅ استخدام مفاتيح حساب حقيقي (Live Keys) - الاتصال بـ SIP...", flush=True)
-    # تمرير رابط بث البيانات الحية المباشر لمنع خطأ المصادقة
-    stream = StockDataStream(
-        api_key=API_KEY, 
-        secret_key=SECRET_KEY, 
-        feed=DataFeed.SIP,
-        url_override="wss://stream.data.alpaca.markets/v2/sip"
-    )
+def create_stream_client():
+    if is_paper:
+        print("⚠️ تم كشف مفاتيح حساب تجريبي (Paper Keys) - استخدام تغذية IEX...", flush=True)
+        return StockDataStream(
+            api_key=API_KEY, 
+            secret_key=SECRET_KEY, 
+            feed=DataFeed.IEX,
+            raw_data=True
+        )
+    else:
+        print("✅ تم كشف مفاتيح حساب حقيقي (Live Keys) - الاتصال بـ SIP...", flush=True)
+        return StockDataStream(
+            api_key=API_KEY, 
+            secret_key=SECRET_KEY, 
+            feed=DataFeed.SIP,
+            raw_data=True
+        )
+
+try:
+    stream = create_stream_client()
+except Exception as e:
+    print(f"❌ خطأ عند إنشاء العميل: {e}", flush=True)
+    sys.exit(1)
 
 WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
@@ -49,10 +55,13 @@ WATCHLIST = [
 price_history = {}
 
 async def handle_trade(trade):
-    symbol = trade.symbol
-    price = float(trade.price)
-    size = int(trade.size)
+    symbol = trade.get("S") if isinstance(trade, dict) else getattr(trade, "symbol", "")
+    price = float(trade.get("p") if isinstance(trade, dict) else getattr(trade, "price", 0))
+    size = int(trade.get("s") if isinstance(trade, dict) else getattr(trade, "size", 0))
     
+    if not symbol or price == 0:
+        return
+
     if symbol not in price_history:
         price_history[symbol] = {"prices": [], "volume": 0}
         
