@@ -5,21 +5,30 @@ from alpaca.data.enums import DataFeed
 from order_manager import order_manager
 from risk_engine import risk_engine
 
-# جلب المفاتيح وتنظيفها
+# جلب وتنظيف المفاتيح من المتغيرات البيئية
 API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 
-# التمييز التلقائي بين مفاتيح Paper ومفاتيح Live
+# التمييز التلقائي بين مفاتيح Paper والحساب الحقيقي Live
 is_paper = API_KEY.startswith("PK")
 
 if is_paper:
-    print("⚠️ تم كشف مفاتيح حساب ورقي (Paper Keys) - يتم الاتصال بتغذية IEX...", flush=True)
-    # مفاتيح الحساب الورقي تدعم تغذية IEX المجانية
-    stream = StockDataStream(api_key=API_KEY, secret_key=SECRET_KEY, feed=DataFeed.IEX)
+    print("⚠️ استخدام مفاتيح حساب تجريبي (Paper Keys)...", flush=True)
+    stream = StockDataStream(
+        api_key=API_KEY, 
+        secret_key=SECRET_KEY, 
+        feed=DataFeed.IEX,
+        raw_data=True
+    )
 else:
-    print("✅ تم كشف مفاتيح حساب حقيقي (Live Keys) - يتم الاتصال بتغذية SIP الحية...", flush=True)
-    # مفاتيح الحساب الحقيقي تدعم تغذية SIP الشاملة
-    stream = StockDataStream(api_key=API_KEY, secret_key=SECRET_KEY, feed=DataFeed.SIP)
+    print("✅ استخدام مفاتيح حساب حقيقي (Live Keys) - الاتصال بـ SIP...", flush=True)
+    # تمرير رابط بث البيانات الحية المباشر لمنع خطأ المصادقة
+    stream = StockDataStream(
+        api_key=API_KEY, 
+        secret_key=SECRET_KEY, 
+        feed=DataFeed.SIP,
+        url_override="wss://stream.data.alpaca.markets/v2/sip"
+    )
 
 WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
