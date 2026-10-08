@@ -1,13 +1,17 @@
 import os
 import asyncio
 from alpaca.data.live import StockDataStream
+from order_manager import order_manager
+from risk_engine import risk_engine
 
-# 1. جلب المفاتيح البيئية
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
+# مفاتيح الحساب والاشتراك المدفوع (SIP Feed)
+API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
+SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 
-# قائمة الأسهم المراقبة
-SYMBOLS = [
+# استخدام تغذية sip للبيانات الكاملة
+stream = StockDataStream(API_KEY, SECRET_KEY, feed='sip')
+
+WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
     "AYTU", "AVO", "AVPT", "AMOD", "NSTR", "AIXI", "CYCU", "PMI", 
     "AMPL", "AMPX", "ABSI", "AMBO", "AEYE", "AIOT", "AENT", "ADTN", 
@@ -20,44 +24,47 @@ SYMBOLS = [
     "REBN", "NEOV", "FEAM", "SSM", "IMC", "CELU", "ONCY", "ABVC", 
     "TLSI", "DBRG", "AMIX", "DAIC", "VEEA", "FTFT", "SOUN", "BBAI", 
     "LUNR", "SERV", "BZFD", "QNST", "SHIP", "CWCO", "BNAI", "AISP", 
-    "KULR", "RIG", "GTEC", "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF","MOBX"
+    "KULR", "RIG", "GTEC", "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF"
 ]
 
+# ذاكرة لحظية لتتبع الأحجام والأسعار
+price_history = {}
+
 async def handle_trade(trade):
-    """
-    معالجة كل صفقة منفذة في السوق لحظة بلاحظة
-    """
     symbol = trade.symbol
-    price = trade.price
-    size = trade.size
-    timestamp = trade.timestamp
-    print(f"⚡ [صفقة حية] {symbol}: السعر=${price:.2f} | الكمية={size} | الوقت={timestamp}")
+    price = float(trade.price)
+    size = int(trade.size)
+    
+    if symbol not in price_history:
+        price_history[symbol] = {"prices": [], "volume": 0}
+        
+    price_history[symbol]["prices"].append(price)
+    price_history[symbol]["volume"] += size
+    
+    # الاحتفاظ بآخر 100 صفقة فقط في الذاكرة
+    if len(price_history[symbol]["prices"]) > 100:
+        price_history[symbol]["prices"].pop(0)
 
-async def handle_quote(quote):
-    """
-    معالجة الفارق بين العرض والطلب (Bid/Ask Spread) لحساب التكلفة الحقيقية
-    """
-    symbol = quote.symbol
-    bid = quote.ask_price
-    ask = quote.ask_price
-    if bid > 0:
-        spread_pct = ((ask - bid) / bid) * 100
-        print(f"📊 [عرض/طلب] {symbol}: Ask=${ask:.2f} | Bid=${bid:.2f} | السبريد={spread_pct:.2f}%")
+    # فحص الفلاتر السعرية والزخم فورياً (Sub-second)
+    if 1.00 <= price <= 16.00:
+        first_price = price_history[symbol]["prices"][0]
+        momentum_pct = ((price - first_price) / first_price) * 100
+        
+        # شرط الزخم الفوري والسريع
+        if momentum_pct >= 2.5 and price_history[symbol]["volume"] >= 30000:
+            bid = price * 0.998
+            ask = price * 1.002
+            
+            if risk_engine.is_trade_allowed(symbol, bid, ask):
+                result = order_manager.process_buy_signal(symbol, price, budget=50.0)
+                print(f"⚡ [تنفيذ لحظي SIP] {symbol} | السعر: ${price} | النتيجة: {result}")
 
-def start_live_stream():
-    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-        print("خطأ: مفاتيح Alpaca غير متوفرة للاتصال الحي.")
-        return
-
-    # إنشاء الاتصال الحي مع Alpaca IEX Stream
-    stream = StockDataStream(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-
-    # الاشتراك في الصفقات والعروض المباشرة
-    stream.subscribe_trades(handle_trade, *SYMBOLS)
-    stream.subscribe_quotes(handle_quote, *SYMBOLS)
-
-    print("🚀 تم تشغيل اتصال Alpaca WebSocket المباشر...")
+def start_stream():
+    order_manager.reconcile_positions()
+    print("🚀 بدء الاستماع اللحظي عالي السرعة (SIP Feed)...")
+    for symbol in WATCHLIST:
+        stream.subscribe_trades(handle_trade, symbol)
     stream.run()
 
 if __name__ == "__main__":
-    start_live_stream()
+    start_stream()
