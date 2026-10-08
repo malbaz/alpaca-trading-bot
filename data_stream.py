@@ -1,40 +1,26 @@
 import os
 import sys
+import asyncio
 from alpaca.data.live import StockDataStream
 from alpaca.data.enums import DataFeed
 from order_manager import order_manager
 from risk_engine import risk_engine
 
-# جلب المفاتيح وتنظيف المسافات
 API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 
-# التمييز بين نوع الحساب (Paper أم Live)
-is_paper = API_KEY.startswith("PK")
+def get_stream_client():
+    # محاولة الاتصال عبر SIP أولاً (للحسابات الحقيقية)
+    if not API_KEY.startswith("PK"):
+        try:
+            print("🔄 تجربة الاتصال عبر تغذية SIP الحية...", flush=True)
+            return StockDataStream(API_KEY, SECRET_KEY, feed=DataFeed.SIP, raw_data=True)
+        except Exception as e:
+            print(f"⚠️ تعذر الاتصال بـ SIP: {e}", flush=True)
 
-def create_stream_client():
-    if is_paper:
-        print("⚠️ تم كشف مفاتيح حساب تجريبي (Paper Keys) - استخدام تغذية IEX...", flush=True)
-        return StockDataStream(
-            api_key=API_KEY, 
-            secret_key=SECRET_KEY, 
-            feed=DataFeed.IEX,
-            raw_data=True
-        )
-    else:
-        print("✅ تم كشف مفاتيح حساب حقيقي (Live Keys) - الاتصال بـ SIP...", flush=True)
-        return StockDataStream(
-            api_key=API_KEY, 
-            secret_key=SECRET_KEY, 
-            feed=DataFeed.SIP,
-            raw_data=True
-        )
-
-try:
-    stream = create_stream_client()
-except Exception as e:
-    print(f"❌ خطأ عند إنشاء العميل: {e}", flush=True)
-    sys.exit(1)
+    # في حال استخدام مفاتيح Paper أو فشل SIP، التحول المباشر لـ IEX
+    print("⚠️ استخدام تغذية IEX للبيانات (Paper/Free Stream)...", flush=True)
+    return StockDataStream(API_KEY, SECRET_KEY, feed=DataFeed.IEX, raw_data=True)
 
 WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
@@ -89,10 +75,16 @@ def start_stream():
     except Exception as e:
         print(f"⚠️ تنبيه أثناء مطابقة التدويرات: {e}", flush=True)
         
+    stream = get_stream_client()
     print("🚀 بدء الاستماع اللحظي المستمر لبيانات الأسعار...", flush=True)
+    
     for symbol in WATCHLIST:
         stream.subscribe_trades(handle_trade, symbol)
-    stream.run()
+        
+    try:
+        stream.run()
+    except Exception as e:
+        print(f"❌ خطأ أثناء تشغيل البث: {e}", flush=True)
 
 if __name__ == "__main__":
     start_stream()
