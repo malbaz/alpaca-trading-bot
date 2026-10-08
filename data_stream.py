@@ -9,15 +9,9 @@ from risk_engine import risk_engine
 API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 
-is_paper = API_KEY.startswith("PK")
-
-# تحديد رابط الـ WebSocket المناسب
-if is_paper:
-    WS_URL = "wss://stream.data.alpaca.markets/v2/iex"
-    print("⚠️ استخدام سيرفر تغذية IEX للبيانات (Paper Keys)...", flush=True)
-else:
-    WS_URL = "wss://stream.data.alpaca.markets/v2/sip"
-    print("✅ استخدام سيرفر تغذية SIP المباشر (Live Keys)...", flush=True)
+# استخدام سيرفر تغذية IEX المجاني والمتاح لجميع الحسابات لتفادي خطأ 402
+WS_URL = "wss://stream.data.alpaca.markets/v2/iex"
+print("🚀 استخدام سيرفر تغذية IEX للبيانات اللحظية...", flush=True)
 
 WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
@@ -41,7 +35,7 @@ async def process_message(msg):
     try:
         data = json.loads(msg)
         for item in data:
-            if item.get("T") == "t":  # صفقة التداول (Trade)
+            if item.get("T") == "t":  # صفقة تداول
                 symbol = item.get("S")
                 price = float(item.get("p", 0))
                 size = int(item.get("s", 0))
@@ -76,10 +70,8 @@ async def run_websocket():
     while True:
         try:
             async with websockets.connect(WS_URL) as ws:
-                # 1. انتظار رسالة الترحيب من السيرفر
                 res = await ws.recv()
                 
-                # 2. إرسال بيانات المصادقة
                 auth_payload = {
                     "action": "auth",
                     "key": API_KEY,
@@ -90,21 +82,19 @@ async def run_websocket():
                 auth_res = await ws.recv()
                 print(f"🔐 نتيجة المصادقة: {auth_res}", flush=True)
 
-                # 3. الاشتراك في أسعار قائمة المتابعة
                 sub_payload = {
                     "action": "subscribe",
                     "trades": WATCHLIST
                 }
                 await ws.send(json.dumps(sub_payload))
-                print("🚀 تم الاشتراك في بث الأسعار المباشر بنجاح!", flush=True)
+                print("🚀 تم الاشتراك في بث أسعار IEX بنجاح!", flush=True)
 
-                # 4. استلام الرسائل باستمرار
                 while True:
                     msg = await ws.recv()
                     await process_message(msg)
 
         except Exception as e:
-            print(f"❌ انقطع الاتصال بالـ WebSocket: {e} - جاري إعادة الاتصال خلال 5 ثوانٍ...", flush=True)
+            print(f"❌ انقطع الاتصال بالـ WebSocket: {e} - إعادة الاتصال خلال 5 ثوانٍ...", flush=True)
             await asyncio.sleep(5)
 
 def start_stream():
