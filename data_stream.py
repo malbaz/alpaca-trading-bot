@@ -1,15 +1,20 @@
 import os
-import asyncio
+import sys
 from alpaca.data.live import StockDataStream
+from alpaca.data.enums import DataFeed
 from order_manager import order_manager
 from risk_engine import risk_engine
 
-# مفاتيح الحساب والاشتراك المدفوع (SIP Feed)
+# مفاتيح الحساب
 API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 
-# استخدام تغذية sip للبيانات الكاملة
-stream = StockDataStream(API_KEY, SECRET_KEY, feed='sip')
+# استخدام تغذية SIP الشاملة عبر DataFeed.SIP
+try:
+    stream = StockDataStream(API_KEY, SECRET_KEY, feed=DataFeed.SIP)
+except Exception:
+    # احتياطي في حال كانت نسخة المكتبة أقدم
+    stream = StockDataStream(API_KEY, SECRET_KEY, feed='sip')
 
 WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
@@ -27,7 +32,6 @@ WATCHLIST = [
     "KULR", "RIG", "GTEC", "PDSB", "GRML", "BFLY", "EAF", "IPDN", "WFCF"
 ]
 
-# ذاكرة لحظية لتتبع الأحجام والأسعار
 price_history = {}
 
 async def handle_trade(trade):
@@ -41,27 +45,28 @@ async def handle_trade(trade):
     price_history[symbol]["prices"].append(price)
     price_history[symbol]["volume"] += size
     
-    # الاحتفاظ بآخر 100 صفقة فقط في الذاكرة
     if len(price_history[symbol]["prices"]) > 100:
         price_history[symbol]["prices"].pop(0)
 
-    # فحص الفلاتر السعرية والزخم فورياً (Sub-second)
     if 1.00 <= price <= 16.00:
         first_price = price_history[symbol]["prices"][0]
         momentum_pct = ((price - first_price) / first_price) * 100
         
-        # شرط الزخم الفوري والسريع
         if momentum_pct >= 2.5 and price_history[symbol]["volume"] >= 30000:
-            bid = price * 0.998
-            ask = price * 1.002
+            bid = price * 0.995
+            ask = price * 1.005
             
             if risk_engine.is_trade_allowed(symbol, bid, ask):
                 result = order_manager.process_buy_signal(symbol, price, budget=50.0)
-                print(f"⚡ [تنفيذ لحظي SIP] {symbol} | السعر: ${price} | النتيجة: {result}")
+                print(f"⚡ [SIP Live Signal] {symbol} | السعر: ${price} | النتيجة: {result}", flush=True)
 
 def start_stream():
-    order_manager.reconcile_positions()
-    print("🚀 بدء الاستماع اللحظي عالي السرعة (SIP Feed)...")
+    try:
+        order_manager.reconcile_positions()
+    except Exception as e:
+        print(f"⚠️ تنبيه أثناء مطابقة التدويرات: {e}", flush=True)
+        
+    print("🚀 بدء الاستماع اللحظي المستمر عبر Alpaca SIP Data...", flush=True)
     for symbol in WATCHLIST:
         stream.subscribe_trades(handle_trade, symbol)
     stream.run()
