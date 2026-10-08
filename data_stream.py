@@ -5,16 +5,21 @@ from alpaca.data.enums import DataFeed
 from order_manager import order_manager
 from risk_engine import risk_engine
 
-# مفاتيح الحساب
+# جلب المفاتيح وتنظيفها
 API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 
-# استخدام تغذية SIP الشاملة عبر DataFeed.SIP
-try:
-    stream = StockDataStream(API_KEY, SECRET_KEY, feed=DataFeed.SIP)
-except Exception:
-    # احتياطي في حال كانت نسخة المكتبة أقدم
-    stream = StockDataStream(API_KEY, SECRET_KEY, feed='sip')
+# التمييز التلقائي بين مفاتيح Paper ومفاتيح Live
+is_paper = API_KEY.startswith("PK")
+
+if is_paper:
+    print("⚠️ تم كشف مفاتيح حساب ورقي (Paper Keys) - يتم الاتصال بتغذية IEX...", flush=True)
+    # مفاتيح الحساب الورقي تدعم تغذية IEX المجانية
+    stream = StockDataStream(api_key=API_KEY, secret_key=SECRET_KEY, feed=DataFeed.IEX)
+else:
+    print("✅ تم كشف مفاتيح حساب حقيقي (Live Keys) - يتم الاتصال بتغذية SIP الحية...", flush=True)
+    # مفاتيح الحساب الحقيقي تدعم تغذية SIP الشاملة
+    stream = StockDataStream(api_key=API_KEY, secret_key=SECRET_KEY, feed=DataFeed.SIP)
 
 WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
@@ -58,7 +63,7 @@ async def handle_trade(trade):
             
             if risk_engine.is_trade_allowed(symbol, bid, ask):
                 result = order_manager.process_buy_signal(symbol, price, budget=50.0)
-                print(f"⚡ [SIP Live Signal] {symbol} | السعر: ${price} | النتيجة: {result}", flush=True)
+                print(f"⚡ [Live Signal] {symbol} | السعر: ${price} | النتيجة: {result}", flush=True)
 
 def start_stream():
     try:
@@ -66,7 +71,7 @@ def start_stream():
     except Exception as e:
         print(f"⚠️ تنبيه أثناء مطابقة التدويرات: {e}", flush=True)
         
-    print("🚀 بدء الاستماع اللحظي المستمر عبر Alpaca SIP Data...", flush=True)
+    print("🚀 بدء الاستماع اللحظي المستمر لبيانات الأسعار...", flush=True)
     for symbol in WATCHLIST:
         stream.subscribe_trades(handle_trade, symbol)
     stream.run()
