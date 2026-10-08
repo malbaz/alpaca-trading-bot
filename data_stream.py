@@ -9,9 +9,14 @@ from risk_engine import risk_engine
 API_KEY = os.getenv("ALPACA_API_KEY", "").strip()
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "").strip()
 
-# استخدام سيرفر تغذية IEX المجاني والمتاح لجميع الحسابات لتفادي خطأ 402
-WS_URL = "wss://stream.data.alpaca.markets/v2/iex"
-print("🚀 استخدام سيرفر تغذية IEX للبيانات اللحظية...", flush=True)
+# التمييز الدقيق بين الحساب الورقي والحقيقي لتحديد سيرفر البث المناسب
+if API_KEY.startswith("PK"):
+    WS_URL = "wss://stream.data.alpaca.markets/v2/iex"
+    print("⚠️ تم كشف مفاتيح Paper - الاتصال عبر سيرفر IEX...", flush=True)
+else:
+    # للحساب الحقيقي بدون اشتراك مدفوع يتم استخدام سيرفر IEX المباشر
+    WS_URL = "wss://stream.data.alpaca.markets/v2/iex"
+    print("✅ تم كشف مفاتيح Live - الاتصال عبر سيرفر IEX المباشر...", flush=True)
 
 WATCHLIST = [
     "BOOM", "BRBR", "BNED", "BOF", "BLZE", "BKKT", "BIAF", "AXIL", 
@@ -35,7 +40,7 @@ async def process_message(msg):
     try:
         data = json.loads(msg)
         for item in data:
-            if item.get("T") == "t":  # صفقة تداول
+            if item.get("T") == "t":
                 symbol = item.get("S")
                 price = float(item.get("p", 0))
                 size = int(item.get("s", 0))
@@ -87,14 +92,14 @@ async def run_websocket():
                     "trades": WATCHLIST
                 }
                 await ws.send(json.dumps(sub_payload))
-                print("🚀 تم الاشتراك في بث أسعار IEX بنجاح!", flush=True)
+                print("🚀 تم الاشتراك في بث الأسعار بنجاح!", flush=True)
 
                 while True:
                     msg = await ws.recv()
                     await process_message(msg)
 
         except Exception as e:
-            print(f"❌ انقطع الاتصال بالـ WebSocket: {e} - إعادة الاتصال خلال 5 ثوانٍ...", flush=True)
+            print(f"❌ انقطع الاتصال: {e} - إعادة المحاولة خلال 5 ثوانٍ...", flush=True)
             await asyncio.sleep(5)
 
 def start_stream():
