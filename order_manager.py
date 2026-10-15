@@ -9,27 +9,24 @@ from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 class OrderManager:
     """
-    مدير الأوامر الموحد وآلة الحالة لمنع التضارب وضمان حماية الحساب
+    مدير الأوامر الموحد: إدارة حالة التداول والحد المالي لعملية الشراء
     """
     def __init__(self):
         self.api_key = os.getenv("ALPACA_API_KEY", "").strip()
         self.secret_key = os.getenv("ALPACA_SECRET_KEY", "").strip()
-        self.paper = False
-        
+        self.paper = True
+
         if not self.api_key or not self.secret_key:
-            raise ValueError("مفاتيح Alpaca غير متوفرة لـ OrderManager.")
+            raise ValueError("مفاتيح Alpaca غير متوفرة في OrderManager.")
 
         self.client = TradingClient(self.api_key, self.secret_key, paper=self.paper)
         
-        # قفل الأمان للتعامل مع الطلبات المتزامنة (Thread Lock)
+        # قفل الأمان للتعامل مع الطلبات المتوازية
         self.lock = threading.Lock()
         
-        # ذاكرة آلة الحالة للأسهم (State Machine Tracker)
-        # States: "NONE", "PENDING_BUY", "OPEN_POSITION", "PENDING_SELL"
+        # تتبع حالة المراكز المفتوحة
         self.symbol_states: Dict[str, str] = {}
-        
-        # أقصى عدد صفقات مفتوحة في نفس الوقت لحماية الحساب
-        self.max_concurrent_positions = 2
+        self.max_concurrent_positions = 3
 
     def get_symbol_state(self, symbol: str) -> str:
         with self.lock:
@@ -38,65 +35,70 @@ class OrderManager:
     def set_symbol_state(self, symbol: str, state: str):
         with self.lock:
             self.symbol_states[symbol.upper()] = state
-            print(f"🔄 [تحديث الحالة] {symbol.upper()} ➔ {state}")
+            print(f"🔄 [{symbol.upper()}] تغيرت الحالة إلى -> {state}")
 
     def reconcile_positions(self):
         """
-        مطابقة ذاكرة البوت مع المراكز الحقيقية لدى الوسيط Alpaca
+        مزامنة المراكز الحقيقية مع ذاكرة البوت
         """
         try:
             positions = self.client.get_all_positions()
             active_symbols = {p.symbol.upper(): "OPEN_POSITION" for p in positions}
             
             with self.lock:
-                # تحديث الأسهم المفتوحة لدى الوسيط
-                for sym, state in active_symbols.items():
-                    self.symbol_states[sym] = state
-                    
-                # إعادة ضبط الأسهم غير الموجودة لدى الوسيط كـ NONE
-                for sym in list(self.symbol_states.keys()):
-                    if self.symbol_states[sym] == "OPEN_POSITION" and sym not in active_symbols:
+                for sym, state in list(self.symbol_states.items()):
+                    if state == "OPEN_POSITION" and sym not in active_symbols:
                         self.symbol_states[sym] = "NONE"
-                        
-            print(f"✅ [المطابقة] تم تحديث حالة المراكز المفتوحة: {list(active_symbols.keys())}")
+                for sym in active_symbols:
+                    self.symbol_states[sym] = "OPEN_POSITION"
+            
+            print(f"✅ [المزامنة] تم تحديث حالة المراكز المفتوحة: {list(active_symbols.keys())}")
         except Exception as e:
-            print(f"❌ خطأ أثناء المطابقة مع الوسيط: {e}")
+            print(f"❌ [المزامنة] خطأ أثناء المزامنة: {e}")
 
     def process_buy_signal(self, symbol: str, price: float, budget: float = 25.0) -> Dict[str, Any]:
         """
-        نافذة التنفيذ الموحدة لجميع إشارات الشراء (سواءً من Webhook أو Screener)
+        معالجة إشارة الشراء مع فحص السعر لمنع القسمة على صفر
         """
         symbol = symbol.upper()
         
         with self.lock:
-            # 1. مطابقة سقف الصفقات المفتوحة
+            # 1. التثبت من المراكز المفتوحة
             open_count = sum(1 for s in self.symbol_states.values() if s in ["PENDING_BUY", "OPEN_POSITION"])
             if open_count >= self.max_concurrent_positions:
-                return {"status": "rejected", "reason": f"تم الوصول للحد الأقصى للمراكز المتزامنة ({self.max_concurrent_positions})"}
-
-            # 2. فحص حالة السهم لمنع التكرار
+                return {"status": "rejected", "reason": f"تم الوصول للحد الأقصى للمراكز المفتوحة ({self.max_concurrent_positions})"}
+            
             current_state = self.symbol_states.get(symbol, "NONE")
             if current_state != "NONE":
-                return {"status": "rejected", "reason": f"السهم {symbol} في حالة {current_state} بالفعل"}
-
-            # حجز السهم مؤقتاً
+                return {"status": "rejected", "reason": f"السهم في حالة {current_state} بالفعل"}
+            
             self.symbol_states[symbol] = "PENDING_BUY"
 
         try:
-            # 3. التحقق من القوة الشرائية
             account = self.client.get_account()
             buying_power = float(account.buying_power)
             actual_budget = min(budget, buying_power)
-
-            if actual_budget < 15.0:
-                self.set_symbol_state(symbol, "NONE")
-                return {"status": "rejected", "reason": f"القوة الشرائية غير كافية (${buying_power:.2f})"}
-
-            qty = max(1, int(actual_budget / price))
-            limit_price = round(price * 1.002, 2)
             
-            # 4. إنشاء معرّف أمر فريد محمي لمنع تكرار الأمر في خوادم Alpaca
-            client_order_id = f"bot_buy_{symbol}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+            if actual_budget < 10.0:
+                self.set_symbol_state(symbol, "NONE")
+                return {"status": "rejected", "reason": f"القوة الشرائية غير كافية ({buying_power}$)"}
+
+            # --- فحص السعر لتفادي القسمة على صفر ---
+            if price <= 0:
+                try:
+                    latest_trade = self.client.get_latest_trade(symbol)
+                    price = float(latest_trade.price)
+                except Exception as e:
+                    print(f"❌ تعذر جلب السعر اللحظي لـ {symbol}: {e}")
+                    self.set_symbol_state(symbol, "NONE")
+                    return {"status": "rejected", "reason": "Invalid or zero price"}
+
+            qty = int(actual_budget / price)
+            if qty <= 0:
+                qty = 1  # ضمان شراء سهم واحد على الأقل للأسهم مرتفعة السعر
+
+            limit_price = round(price * 1.005, 2)
+            client_order_id = f"bot_buy_{symbol}_{int(time.time())}_{uuid.uuid4().hex[:4]}"
 
             order_data = LimitOrderRequest(
                 symbol=symbol,
@@ -110,58 +112,57 @@ class OrderManager:
 
             order = self.client.submit_order(order_data)
             self.set_symbol_state(symbol, "OPEN_POSITION")
-            print(f"🚀 [شراء ناجح] {symbol} | الكمية: {qty} | السعر: ${limit_price} | Order ID: {order.id}")
+            print(f"🚀 [شراء] تم إرسال أمر الشراء لـ {symbol} | الكمية: {qty} | السعر: {limit_price} | Order ID: {order.id}")
             return {"status": "executed", "order_id": str(order.id), "qty": qty, "price": limit_price}
 
         except Exception as e:
             self.set_symbol_state(symbol, "NONE")
-            print(f"❌ [فشل الشراء] {symbol}: {e}")
+            print(f"❌ [خطأ الشراء] {e}")
             return {"status": "error", "reason": str(e)}
 
     def process_sell_signal(self, symbol: str, price: float, reason: str = "Signal") -> Dict[str, Any]:
         """
-        نافذة التنفيذ الموحدة لجميع إشارات البيع والخروج
+        معالجة إشارة الخروج والبيع
         """
         symbol = symbol.upper()
         
         with self.lock:
             current_state = self.symbol_states.get(symbol, "NONE")
             if current_state == "PENDING_SELL":
-                return {"status": "rejected", "reason": f"السهم {symbol} قيد البيع بالفعل"}
+                return {"status": "rejected", "reason": "يتم البيع بالفعل"}
             
             self.symbol_states[symbol] = "PENDING_SELL"
 
         try:
             positions = self.client.get_all_positions()
             target_pos = next((p for p in positions if p.symbol.upper() == symbol), None)
-
+            
             if not target_pos:
                 self.set_symbol_state(symbol, "NONE")
-                return {"status": "rejected", "reason": f"لا يوجد مركز مفتوح لـ {symbol} لدى الوسيط"}
+                return {"status": "rejected", "reason": f"لا يوجد مركز مفتوح لـ {symbol}"}
 
             qty = int(float(target_pos.qty))
-            sell_limit_price = round(price * 0.990, 2)
-            client_order_id = f"bot_sell_{symbol}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+            limit_price = round(price * 0.995, 2)
+            client_order_id = f"bot_sell_{symbol}_{int(time.time())}_{uuid.uuid4().hex[:4]}"
 
-            exit_order = LimitOrderRequest(
+            order_data = LimitOrderRequest(
                 symbol=symbol,
                 qty=qty,
                 side=OrderSide.SELL,
                 time_in_force=TimeInForce.DAY,
-                limit_price=sell_limit_price,
+                limit_price=limit_price,
                 extended_hours=True,
                 client_order_id=client_order_id
             )
 
-            order = self.client.submit_order(exit_order)
+            order = self.client.submit_order(order_data)
             self.set_symbol_state(symbol, "NONE")
-            print(f"✅ [بيع ناجح] {symbol} | السبب: {reason} | الكمية: {qty} | السعر: ${sell_limit_price}")
-            return {"status": "executed", "order_id": str(order.id), "qty": qty, "price": sell_limit_price}
+            print(f"📉 [بيع] تم إرسال أمر البيع لـ {symbol} | الكمية: {qty} | السعر: {limit_price}")
+            return {"status": "executed", "order_id": str(order.id), "qty": qty, "price": limit_price}
 
         except Exception as e:
             self.set_symbol_state(symbol, "OPEN_POSITION")
-            print(f"❌ [فشل البيع] {symbol}: {e}")
+            print(f"❌ [خطأ البيع] {e}")
             return {"status": "error", "reason": str(e)}
 
-# كائن عالمي موحد لاستخدامه عبر التطبيق
 order_manager = OrderManager()
