@@ -11,7 +11,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 def send_telegram_alert(message: str):
     """
-    إرسال إشعار أو توصية فورية إلى جروب التليجرام بتنسيق فخم
+    إرسال إشعار أو توصية فورية إلى جروب التليجرام بالتنسيق المعتمد
     """
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -35,7 +35,7 @@ def send_telegram_alert(message: str):
 
 class OrderManager:
     """
-    مدير الأوامر الموحد: إدارة حالة التداول، إرسال التوصيات والتنسيقات، والحد المالي
+    مدير الأوامر الموحد: إدارة حالة التداول، حساب الأهداف ووقف الخسارة خوارزمياً، والحد المالي
     """
     def __init__(self):
         self.api_key = os.getenv("ALPACA_API_KEY", "").strip()
@@ -82,7 +82,16 @@ class OrderManager:
         except Exception as e:
             print(f"❌ [المزامنة] خطأ أثناء المزامنة: {e}")
 
-    def process_buy_signal(self, symbol: str, price: float, budget: float = 25.0) -> Dict[str, Any]:
+    def process_buy_signal(
+        self, 
+        symbol: str, 
+        price: float, 
+        budget: float = 25.0,
+        target1: Any = None,
+        target2: Any = None,
+        target3: Any = None,
+        stop_loss: Any = None
+    ) -> Dict[str, Any]:
         symbol = symbol.upper()
         
         with self.lock:
@@ -105,18 +114,29 @@ class OrderManager:
                 except Exception as e:
                     print(f"⚠️ تعذر جلب السعر اللحظي لـ {symbol}: {e}")
 
-            price_str = f"${price:.2f}" if price > 0 else "السعر اللحظي"
+            # حساب الأهداف ووقف الخسارة خوارزمياً إن لم تتحدد مسبقاً
+            if price > 0:
+                price_str = f"${price:.2f}"
+                t1_str = f"${target1:.2f}" if isinstance(target1, (int, float)) and target1 > 0 else f"${price * 1.03:.2f}"
+                t2_str = f"${target2:.2f}" if isinstance(target2, (int, float)) and target2 > 0 else f"${price * 1.06:.2f}"
+                t3_str = f"${target3:.2f}" if isinstance(target3, (int, float)) and target3 > 0 else f"${price * 1.10:.2f}"
+                sl_str = f"${stop_loss:.2f}" if isinstance(stop_loss, (int, float)) and stop_loss > 0 else f"${price * 0.97:.2f}"
+            else:
+                price_str = "N/A"
+                t1_str = t2_str = t3_str = sl_str = "N/A"
 
-            # التنسيق الفخم للتوصية
+            # التنسيق الفعلي المعتمد والمطابق لشكل التوصيات السابق
             telegram_msg = (
-                f"🔥 *توصية دخول فرصة جديدة* 🔥\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 *السهم:* `{symbol}`\n"
-                f"💵 *السعر الاسترشادي:* `{price_str}`\n"
-                f"💰 *حجم الميزانية:* `${budget:.2f}`\n"
-                f"⏰ *التوقيت:* `{time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"⚡ _تم إرسال الأمر للتنفيذ الآلي عبر البوت_"
+                f"🟢 *توصية تداول جديدة*\n\n"
+                f"📌 *رمز واسم السهم:* `{symbol}` ({symbol})\n"
+                f"⚡️ *اتجاه الصفقة:* BUY\n"
+                f"⏱️ *الإطار الزمني:* لحظي\n"
+                f"💰 *نطاق سعر ووقت الدخول:* {price_str} | فور إطلاق التنبيه\n\n"
+                f"🎯 *الهدف الأول:* {t1_str}\n"
+                f"🎯 *الهدف الثاني:* {t2_str}\n"
+                f"🎯 *الهدف الثالث:* {t3_str}\n\n"
+                f"🛑 *سعر وقف الخسارة:* {sl_str}\n"
+                f"⏳ *وقت الخروج المقترح:* عند تحقق الهدف أو وقف الخسارة"
             )
             send_telegram_alert(telegram_msg)
 
@@ -175,14 +195,12 @@ class OrderManager:
 
         try:
             telegram_msg = (
-                f"🎯 *توصية خروج / جني أرباح* 🎯\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 *السهم:* `{symbol}`\n"
-                f"💵 *سعر البيع:* `${price:.2f}`\n"
-                f"📝 *السبب:* `{reason}`\n"
-                f"⏰ *التوقيت:* `{time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"✨ _تم إغلاق المركز في Alpaca_"
+                f"🔴 *تحديث صفقة / إغلاق مركز*\n\n"
+                f"📌 *رمز واسم السهم:* `{symbol}` ({symbol})\n"
+                f"⚡️ *اتجاه الصفقة:* SELL\n"
+                f"💰 *سعر الخروج:* ${price:.2f}\n"
+                f"📝 *السبب:* {reason}\n"
+                f"⏳ *التوقيت:* {time.strftime('%Y-%m-%d %H:%M:%S')}"
             )
             send_telegram_alert(telegram_msg)
 
