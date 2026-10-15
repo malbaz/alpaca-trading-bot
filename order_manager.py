@@ -62,7 +62,7 @@ class OrderManager:
         except Exception as e:
             print(f"❌ خطأ أثناء المطابقة مع الوسيط: {e}")
 
-    def process_buy_signal(self, symbol: str, price: float, budget: float = 50.0) -> Dict[str, Any]:
+    def process_buy_signal(self, symbol: str, price: float, budget: float = 25.0) -> Dict[str, Any]:
         """
         نافذة التنفيذ الموحدة لجميع إشارات الشراء (سواءً من Webhook أو Screener)
         """
