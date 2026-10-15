@@ -59,7 +59,7 @@ def run_screener():
                 # التحقق عبر محرك المخاطر أولاً
                 if risk_engine.is_trade_allowed(symbol, bid, ask):
                     # إرسال أمر الشراء لمدير الأوامر الموحد
-                    result = order_manager.process_buy_signal(symbol, current_price, budget=50.0)
+                    result = order_manager.process_buy_signal(symbol, current_price, budget=25.0)
                     print(f"نتيجة التنفيذ لـ {symbol}: {result}")
 
         except Exception as e:
