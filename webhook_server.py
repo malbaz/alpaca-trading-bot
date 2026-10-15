@@ -5,7 +5,6 @@ from order_manager import order_manager
 
 app = Flask(__name__)
 
-# جلب كلمة السر أو القبول التلقائي
 WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE", "mysecret123").strip()
 
 @app.route("/", methods=["GET"])
@@ -29,13 +28,27 @@ def webhook():
         price = float(data.get("price", 0))
         quantity = int(data.get("quantity") or data.get("qty") or 1)
 
+        # قراءة الأهداف ووقف الخسارة من الـ Webhook إن وجدت
+        target1 = data.get("target1")
+        target2 = data.get("target2")
+        target3 = data.get("target3")
+        stop_loss = data.get("stop_loss")
+
         if not ticker or not action:
             return jsonify({"status": "error", "message": "Missing ticker or action"}), 400
 
-        print(f"📩 [Webhook Signal Received] {ticker} | Action: {action} | Price: {price} | Qty: {quantity}", flush=True)
+        print(f"📩 [Webhook Signal Received] {ticker} | Action: {action} | Price: {price}", flush=True)
 
         if action == "buy":
-            result = order_manager.process_buy_signal(ticker, price, budget=25.0)
+            result = order_manager.process_buy_signal(
+                symbol=ticker, 
+                price=price, 
+                budget=25.0,
+                target1=target1,
+                target2=target2,
+                target3=target3,
+                stop_loss=stop_loss
+            )
             return jsonify({"status": "success", "result": result}), 200
         elif action in ["sell", "close"]:
             result = order_manager.process_sell_signal(ticker, price)
