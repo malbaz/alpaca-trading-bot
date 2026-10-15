@@ -17,11 +17,11 @@ def webhook():
     try:
         data = request.get_json(force=True) or {}
         
-        # تحقق مرن يتضمن القبول إذا كانت الكلمة مطابقة أو فارغة للتجربة
+        # التحقق من كلمة السر
         incoming_pass = str(data.get("passphrase", "") or data.get("secret", "") or data.get("token", "")).strip()
         
         if WEBHOOK_PASSPHRASE and incoming_pass != WEBHOOK_PASSPHRASE:
-            print(f"⚠️ رفض طلب Webhook: الكلمة المرسلة ({incoming_pass}) غير مطابقة لـ ({WEBHOOK_PASSPHRASE})", flush=True)
+            print(f"⚠️ محاولة وصول غير مصرح بها (Pass: '{incoming_pass}')", flush=True)
             return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
         ticker = data.get("ticker") or data.get("symbol")
@@ -32,16 +32,16 @@ def webhook():
         if not ticker or not action:
             return jsonify({"status": "error", "message": "Missing ticker or action"}), 400
 
-        print(f"📥 [Webhook Signal Received] {ticker} | Action: {action} | Price: {price} | Qty: {quantity}", flush=True)
+        print(f"📩 [Webhook Signal Received] {ticker} | Action: {action} | Price: {price} | Qty: {quantity}", flush=True)
 
         if action == "buy":
-            result = order_manager.process_buy_signal(ticker, price, budget=50.0)
+            result = order_manager.process_buy_signal(ticker, price, budget=25.0)
             return jsonify({"status": "success", "result": result}), 200
-        elif action == "sell":
-            result = order_manager.close_position(ticker)
+        elif action in ["sell", "close"]:
+            result = order_manager.process_sell_signal(ticker, price)
             return jsonify({"status": "success", "result": result}), 200
         else:
-            return jsonify({"status": "error", "message": f"Unknown action {action}"}), 400
+            return jsonify({"status": "error", "message": f"Unknown action '{action}'"}), 400
 
     except Exception as e:
         print(f"❌ خطأ في معالجة الـ Webhook: {e}", flush=True)
