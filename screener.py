@@ -41,16 +41,16 @@ def run_screener():
             volume_sum = int(df['Volume'].iloc[-10:].sum())
 
             # نطاق السعر المعدل: من 1.00 دولار حتى 16.00 دولار
-            if not (1.00 <= current_price <= 16.00):
+            if not (0.50 <= current_price <= 16.00):
                 continue
 
             # حساب نسبة الزخم خلال آخر 5 دقائق
             momentum_pct = ((current_price - price_5m_ago) / price_5m_ago) * 100
 
             # شرط الحجم (مرن ليتماشى مع التداول الممتد وقبل الافتتاح)
-            min_volume = 50000 
+            min_volume = 25000 
 
-            if momentum_pct >= 3.0 and volume_sum >= min_volume:
+            if momentum_pct >= 0.5 and volume_sum >= min_volume:
                 print(f"🔥 فرصة مكتشفة: {symbol} (+{momentum_pct:.2f}%) | السعر: ${current_price} | الحجم: {volume_sum}")
                 
                 bid = current_price * 0.995
