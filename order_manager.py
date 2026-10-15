@@ -11,7 +11,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 def send_telegram_alert(message: str):
     """
-    إرسال إشعار أو توصية فورية إلى جروب التليجرام
+    إرسال إشعار أو توصية فورية إلى جروب التليجرام بتنسيق فخم
     """
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -21,11 +21,12 @@ def send_telegram_alert(message: str):
             payload = {
                 "chat_id": chat_id,
                 "text": message,
-                "parse_mode": "Markdown"
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
             }
             res = requests.post(url, json=payload, timeout=5)
             if res.status_code == 200:
-                print(f"📲 [Telegram] تم إرسال التوصية بنجاح إلى التليجرام")
+                print("📲 [Telegram] تم إرسال التوصية بنجاح بالتنسيق المعتمد")
             else:
                 print(f"⚠️ [Telegram Error] {res.text}")
         except Exception as e:
@@ -34,7 +35,7 @@ def send_telegram_alert(message: str):
 
 class OrderManager:
     """
-    مدير الأوامر الموحد: إدارة حالة التداول، إرسال التوصيات، والحد المالي لعملية الشراء
+    مدير الأوامر الموحد: إدارة حالة التداول، إرسال التوصيات والتنسيقات، والحد المالي
     """
     def __init__(self):
         self.api_key = os.getenv("ALPACA_API_KEY", "").strip()
@@ -50,10 +51,7 @@ class OrderManager:
             print(f"❌ [Alpaca Init Error] خطأ في تهيئة العميل: {e}")
             self.client = None
 
-        # قفل الأمان للتعامل مع الطلبات المتوازية
         self.lock = threading.Lock()
-        
-        # تتبع حالة المراكز المفتوحة
         self.symbol_states: Dict[str, str] = {}
         self.max_concurrent_positions = 3
 
@@ -67,9 +65,6 @@ class OrderManager:
             print(f"🔄 [{symbol.upper()}] تغيرت الحالة إلى -> {state}")
 
     def reconcile_positions(self):
-        """
-        مزامنة المراكز الحقيقية مع ذاكرة البوت
-        """
         if not self.client:
             return
         try:
@@ -88,13 +83,9 @@ class OrderManager:
             print(f"❌ [المزامنة] خطأ أثناء المزامنة: {e}")
 
     def process_buy_signal(self, symbol: str, price: float, budget: float = 25.0) -> Dict[str, Any]:
-        """
-        معالجة إشارة الشراء مع إرسال التوصية فوراً للتليجرام وفحص السعر لمنع القسمة على صفر
-        """
         symbol = symbol.upper()
         
         with self.lock:
-            # 1. التثبت من الحد الأقصى للمراكز المفتوحة
             open_count = sum(1 for s in self.symbol_states.values() if s in ["PENDING_BUY", "OPEN_POSITION"])
             if open_count >= self.max_concurrent_positions:
                 return {"status": "rejected", "reason": f"تم الوصول للحد الأقصى للمراكز المفتوحة ({self.max_concurrent_positions})"}
@@ -106,27 +97,29 @@ class OrderManager:
             self.symbol_states[symbol] = "PENDING_BUY"
 
         try:
-            # --- جلب السعر اللحظي في حال عدم توفره لتفادي القسمة على صفر ---
+            # جلب السعر اللحظي عند الحاجة
             if price <= 0 and self.client:
                 try:
                     latest_trade = self.client.get_latest_trade(symbol)
                     price = float(latest_trade.price)
                 except Exception as e:
-                    print(f"⚠️ تعذر جلب السعر اللحظي لـ {symbol} عبر Alpaca: {e}")
+                    print(f"⚠️ تعذر جلب السعر اللحظي لـ {symbol}: {e}")
 
-            display_price = price if price > 0 else "السعر اللحظي"
+            price_str = f"${price:.2f}" if price > 0 else "السعر اللحظي"
 
-            # 2. إرسال التوصية إلى التليجرام فوراً وقبل تنفيذ طلب Alpaca
+            # التنسيق الفخم للتوصية
             telegram_msg = (
-                f"🚨 *توصية شراء جديدة*\n\n"
-                f"📌 **السهم:** `{symbol}`\n"
-                f"💵 **السعر:** `{display_price}`\n"
-                f"💰 **الميزانية المخصصة:** `${budget}`\n"
-                f"⏰ **التوقيت:** `{time.strftime('%Y-%m-%d %H:%M:%S')}`"
+                f"🔥 *توصية دخول فرصة جديدة* 🔥\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 *السهم:* `{symbol}`\n"
+                f"💵 *السعر الاسترشادي:* `{price_str}`\n"
+                f"💰 *حجم الميزانية:* `${budget:.2f}`\n"
+                f"⏰ *التوقيت:* `{time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"⚡ _تم إرسال الأمر للتنفيذ الآلي عبر البوت_"
             )
             send_telegram_alert(telegram_msg)
 
-            # 3. التحقق من الحساب والقوة الشرائية في Alpaca
             if not self.client:
                 self.set_symbol_state(symbol, "NONE")
                 return {"status": "telegram_sent_only", "reason": "Alpaca client not initialized"}
@@ -145,7 +138,7 @@ class OrderManager:
 
             qty = int(actual_budget / price)
             if qty <= 0:
-                qty = 1  # ضمان شراء سهم واحد على الأقل للأسهم بأسعار أعلى من الميزانية
+                qty = 1
 
             limit_price = round(price * 1.005, 2)
             client_order_id = f"bot_buy_{symbol}_{int(time.time())}_{uuid.uuid4().hex[:4]}"
@@ -162,18 +155,15 @@ class OrderManager:
 
             order = self.client.submit_order(order_data)
             self.set_symbol_state(symbol, "OPEN_POSITION")
-            print(f"🚀 [شراء] تم إرسال أمر الشراء لـ {symbol} | الكمية: {qty} | السعر: {limit_price} | Order ID: {order.id}")
+            print(f"🚀 [شراء] تم إرسال أمر الشراء لـ {symbol} | الكمية: {qty} | السعر: {limit_price}")
             return {"status": "executed", "order_id": str(order.id), "qty": qty, "price": limit_price}
 
         except Exception as e:
             self.set_symbol_state(symbol, "NONE")
-            print(f"❌ [خطأ الشراء في Alpaca] {e}")
+            print(f"❌ [خطأ الشراء] {e}")
             return {"status": "error", "reason": str(e)}
 
     def process_sell_signal(self, symbol: str, price: float, reason: str = "Signal") -> Dict[str, Any]:
-        """
-        معالجة إشارة الخروج والبيع وإرسال التنبيه
-        """
         symbol = symbol.upper()
         
         with self.lock:
@@ -184,12 +174,15 @@ class OrderManager:
             self.symbol_states[symbol] = "PENDING_SELL"
 
         try:
-            # إرسال تنبيه بيع إلى التليجرام
             telegram_msg = (
-                f"📉 *توصية بيع / إغلاق مركز*\n\n"
-                f"📌 **السهم:** `{symbol}`\n"
-                f"💵 **السعر:** `${price}`\n"
-                f"📝 **السبب:** `{reason}`"
+                f"🎯 *توصية خروج / جني أرباح* 🎯\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 *السهم:* `{symbol}`\n"
+                f"💵 *سعر البيع:* `${price:.2f}`\n"
+                f"📝 *السبب:* `{reason}`\n"
+                f"⏰ *التوقيت:* `{time.strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"✨ _تم إغلاق المركز في Alpaca_"
             )
             send_telegram_alert(telegram_msg)
 
