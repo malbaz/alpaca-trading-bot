@@ -17,6 +17,7 @@ from alpaca.trading.requests import (
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
 
 import alerts
+import signals
 import state
 import strategy
 from config import settings
@@ -137,6 +138,11 @@ class OrderManager:
                 state.upsert(symbol, state="OPEN", qty=qty, entry_price=px, target=target, stop=stop)
                 state.log_trade(symbol, "buy", qty, px, "entry")
                 alerts.entry_filled(symbol, qty, px, target, stop, "رسمية" if row.get("bracket") else "ممتد")
+                # توصية لمجموعة العملاء — معزولة تمامًا: أي خطأ هنا لا يؤثر على التداول
+                try:
+                    signals.send_signal(symbol, px, stop, target)
+                except Exception as sig_err:
+                    log.warning("signals: فشل إرسال التوصية (%s) — التداول مستمر", sig_err)
             else:
                 reason = row.get("order_id") if row.get("state") == "PENDING_SELL" else "هدف/وقف Alpaca"
                 state.log_trade(symbol, "sell", qty, px, reason)
