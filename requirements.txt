@@ -1,8 +1,0 @@
-flask
-gunicorn
-requests
-python-dotenv
-alpaca-py
-yfinance
-websockets
-asyncio
