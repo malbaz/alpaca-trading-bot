@@ -1,242 +1,186 @@
-import os
+"""
+مدير الأوامر: الدخول والخروج والمطابقة مع Alpaca.
+
+- الجلسة الرسمية: أمر Bracket (شراء + هدف + وقف) محفوظ لدى Alpaca نفسها،
+  فيعمل الوقف حتى لو توقف البوت.
+- التداول الممتد: Alpaca لا تدعم Bracket ولا أوامر Stop، فنستخدم Limit
+  ويراقب المحرك الهدف والوقف كل دورة.
+"""
+import logging
 import time
 import uuid
-import requests
-import threading
-from typing import Dict, Any, Optional
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import LimitOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from typing import Dict, Any
 
+from alpaca.trading.requests import (
+    LimitOrderRequest, TakeProfitRequest, StopLossRequest, GetOrdersRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
 
-def send_telegram_alert(message: str):
-    """
-    إرسال إشعار أو توصية فورية إلى جروب التليجرام بالتنسيق المعتمد
-    """
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if bot_token and chat_id:
-        try:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True
-            }
-            res = requests.post(url, json=payload, timeout=5)
-            if res.status_code == 200:
-                print("📲 [Telegram] تم إرسال التوصية بنجاح بالتنسيق المعتمد")
-            else:
-                print(f"⚠️ [Telegram Error] {res.text}")
-        except Exception as e:
-            print(f"❌ [Telegram Exception] خطأ في إرسال التليجرام: {e}")
+import alerts
+import signals
+import state
+import strategy
+from config import settings
+
+log = logging.getLogger("orders")
 
 
 class OrderManager:
-    """
-    مدير الأوامر الموحد: إدارة حالة التداول، حساب الأهداف ووقف الخسارة خوارزمياً، والحد المالي
-    """
-    def __init__(self):
-        self.api_key = os.getenv("ALPACA_API_KEY", "").strip()
-        self.secret_key = os.getenv("ALPACA_SECRET_KEY", "").strip()
-        self.paper = True
+    def __init__(self, broker_trading, risk):
+        self.client = broker_trading
+        self.risk = risk
 
-        if not self.api_key or not self.secret_key:
-            print("⚠️ تنبيه: مفاتيح Alpaca غير متوفرة أو لم تكتمل بعد.")
-
-        try:
-            self.client = TradingClient(self.api_key, self.secret_key, paper=self.paper)
-        except Exception as e:
-            print(f"❌ [Alpaca Init Error] خطأ في تهيئة العميل: {e}")
-            self.client = None
-
-        self.lock = threading.Lock()
-        self.symbol_states: Dict[str, str] = {}
-        self.max_concurrent_positions = 3
-
-    def get_symbol_state(self, symbol: str) -> str:
-        with self.lock:
-            return self.symbol_states.get(symbol.upper(), "NONE")
-
-    def set_symbol_state(self, symbol: str, state: str):
-        with self.lock:
-            self.symbol_states[symbol.upper()] = state
-            print(f"🔄 [{symbol.upper()}] تغيرت الحالة إلى -> {state}")
-
-    def reconcile_positions(self):
-        if not self.client:
-            return
-        try:
-            positions = self.client.get_all_positions()
-            active_symbols = {p.symbol.upper(): "OPEN_POSITION" for p in positions}
-            
-            with self.lock:
-                for sym, state in list(self.symbol_states.items()):
-                    if state == "OPEN_POSITION" and sym not in active_symbols:
-                        self.symbol_states[sym] = "NONE"
-                for sym in active_symbols:
-                    self.symbol_states[sym] = "OPEN_POSITION"
-            
-            print(f"✅ [المزامنة] تم تحديث حالة المراكز المفتوحة: {list(active_symbols.keys())}")
-        except Exception as e:
-            print(f"❌ [المزامنة] خطأ أثناء المزامنة: {e}")
-
-    def process_buy_signal(
-        self, 
-        symbol: str, 
-        price: float, 
-        budget: float = 25.0,
-        target1: Any = None,
-        target2: Any = None,
-        target3: Any = None,
-        stop_loss: Any = None
-    ) -> Dict[str, Any]:
+    # ---------- الدخول ----------
+    def buy(self, symbol: str, price: float, ask: float, phase: str, source: str = "scanner") -> Dict[str, Any]:
         symbol = symbol.upper()
-        
-        with self.lock:
-            open_count = sum(1 for s in self.symbol_states.values() if s in ["PENDING_BUY", "OPEN_POSITION"])
-            if open_count >= self.max_concurrent_positions:
-                return {"status": "rejected", "reason": f"تم الوصول للحد الأقصى للمراكز المفتوحة ({self.max_concurrent_positions})"}
-            
-            current_state = self.symbol_states.get(symbol, "NONE")
-            if current_state != "NONE":
-                return {"status": "rejected", "reason": f"السهم في حالة {current_state} بالفعل"}
-            
-            self.symbol_states[symbol] = "PENDING_BUY"
+        ok, reason = self.risk.allow_entry()
+        if not ok:
+            return {"status": "rejected", "reason": reason}
+        if phase == "CLOSED":
+            return {"status": "rejected", "reason": "السوق مغلق"}
+        if phase == "EXTENDED" and not settings.trade_extended_hours:
+            return {"status": "rejected", "reason": "التداول الممتد معطل"}
+        if not state.try_reserve(symbol, settings.max_open_positions):
+            return {"status": "rejected", "reason": "السهم محجوز/فترة تهدئة/بلغنا حد المراكز"}
 
         try:
-            # جلب السعر اللحظي عند الحاجة
-            if price <= 0 and self.client:
-                try:
-                    latest_trade = self.client.get_latest_trade(symbol)
-                    price = float(latest_trade.price)
-                except Exception as e:
-                    print(f"⚠️ تعذر جلب السعر اللحظي لـ {symbol}: {e}")
-
-            # حساب الأهداف ووقف الخسارة خوارزمياً إن لم تتحدد مسبقاً
-            if price > 0:
-                price_str = f"${price:.2f}"
-                t1_str = f"${target1:.2f}" if isinstance(target1, (int, float)) and target1 > 0 else f"${price * 1.03:.2f}"
-                t2_str = f"${target2:.2f}" if isinstance(target2, (int, float)) and target2 > 0 else f"${price * 1.06:.2f}"
-                t3_str = f"${target3:.2f}" if isinstance(target3, (int, float)) and target3 > 0 else f"${price * 1.10:.2f}"
-                sl_str = f"${stop_loss:.2f}" if isinstance(stop_loss, (int, float)) and stop_loss > 0 else f"${price * 0.97:.2f}"
-            else:
-                price_str = "N/A"
-                t1_str = t2_str = t3_str = sl_str = "N/A"
-
-            # التنسيق الفعلي المعتمد والمطابق لشكل التوصيات السابق
-            telegram_msg = (
-                f"🟢 *توصية تداول جديدة*\n\n"
-                f"📌 *رمز واسم السهم:* `{symbol}` ({symbol})\n"
-                f"⚡️ *اتجاه الصفقة:* BUY\n"
-                f"⏱️ *الإطار الزمني:* لحظي\n"
-                f"💰 *نطاق سعر ووقت الدخول:* {price_str} | فور إطلاق التنبيه\n\n"
-                f"🎯 *الهدف الأول:* {t1_str}\n"
-                f"🎯 *الهدف الثاني:* {t2_str}\n"
-                f"🎯 *الهدف الثالث:* {t3_str}\n\n"
-                f"🛑 *سعر وقف الخسارة:* {sl_str}\n"
-                f"⏳ *وقت الخروج المقترح:* عند تحقق الهدف أو وقف الخسارة"
-            )
-            send_telegram_alert(telegram_msg)
-
-            if not self.client:
-                self.set_symbol_state(symbol, "NONE")
-                return {"status": "telegram_sent_only", "reason": "Alpaca client not initialized"}
-
-            account = self.client.get_account()
-            buying_power = float(account.buying_power)
-            actual_budget = min(budget, buying_power)
-            
-            if actual_budget < 5.0:
-                self.set_symbol_state(symbol, "NONE")
-                return {"status": "rejected", "reason": f"القوة الشرائية غير كافية ({buying_power}$)"}
-
-            if price <= 0:
-                self.set_symbol_state(symbol, "NONE")
-                return {"status": "rejected", "reason": "Invalid or zero price"}
-
-            qty = int(actual_budget / price)
+            bp = float(self.risk.account(max_age=5).buying_power)
+            # حد أعلى للسعر: أفضل عرض بيع + هامش بسيط، وليس سعر آخر صفقة
+            limit = round(max(ask, price) * 1.003, 2)
+            qty = strategy.position_qty(limit, bp, settings)
             if qty <= 0:
-                qty = 1
+                state.clear(symbol)
+                return {"status": "rejected", "reason": f"الميزانية/المخاطرة لا تسمح (القوة الشرائية ${bp:.2f})"}
 
-            limit_price = round(price * 1.005, 2)
-            client_order_id = f"bot_buy_{symbol}_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+            target, stop = strategy.exit_levels(limit, settings)
+            coid = f"bot-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:4]}"
 
-            order_data = LimitOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,
-                limit_price=limit_price,
-                extended_hours=True,
-                client_order_id=client_order_id
-            )
+            if phase == "REGULAR":
+                req = LimitOrderRequest(
+                    symbol=symbol, qty=qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+                    limit_price=limit, order_class=OrderClass.BRACKET,
+                    take_profit=TakeProfitRequest(limit_price=target),
+                    stop_loss=StopLossRequest(stop_price=stop),
+                    client_order_id=coid,
+                )
+            else:
+                req = LimitOrderRequest(
+                    symbol=symbol, qty=qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+                    limit_price=limit, extended_hours=True, client_order_id=coid,
+                )
 
-            order = self.client.submit_order(order_data)
-            self.set_symbol_state(symbol, "OPEN_POSITION")
-            print(f"🚀 [شراء] تم إرسال أمر الشراء لـ {symbol} | الكمية: {qty} | السعر: {limit_price}")
-            return {"status": "executed", "order_id": str(order.id), "qty": qty, "price": limit_price}
-
+            order = self.client.submit_order(req)
+            state.upsert(symbol, state="PENDING_BUY", qty=qty, target=target, stop=stop,
+                         order_id=str(order.id), client_order_id=coid,
+                         bracket=1 if phase == "REGULAR" else 0)
+            log.info("BUY submitted %s qty=%s limit=%s phase=%s src=%s", symbol, qty, limit, phase, source)
+            return {"status": "submitted", "order_id": str(order.id), "qty": qty, "limit": limit}
         except Exception as e:
-            self.set_symbol_state(symbol, "NONE")
-            print(f"❌ [خطأ الشراء] {e}")
+            state.clear(symbol)
+            log.error("buy error %s: %s", symbol, e)
             return {"status": "error", "reason": str(e)}
 
-    def process_sell_signal(self, symbol: str, price: float, reason: str = "Signal") -> Dict[str, Any]:
+    # ---------- الخروج ----------
+    def sell(self, symbol: str, reason: str, ref_price: float = 0.0, phase: str = "REGULAR") -> Dict[str, Any]:
         symbol = symbol.upper()
-        
-        with self.lock:
-            current_state = self.symbol_states.get(symbol, "NONE")
-            if current_state == "PENDING_SELL":
-                return {"status": "rejected", "reason": "يتم البيع بالفعل"}
-            
-            self.symbol_states[symbol] = "PENDING_SELL"
-
+        row = state.get(symbol)
+        if row and row["state"] == "PENDING_SELL":
+            return {"status": "rejected", "reason": "البيع جارٍ بالفعل"}
         try:
-            telegram_msg = (
-                f"🔴 *تحديث صفقة / إغلاق مركز*\n\n"
-                f"📌 *رمز واسم السهم:* `{symbol}` ({symbol})\n"
-                f"⚡️ *اتجاه الصفقة:* SELL\n"
-                f"💰 *سعر الخروج:* ${price:.2f}\n"
-                f"📝 *السبب:* {reason}\n"
-                f"⏳ *التوقيت:* {time.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            send_telegram_alert(telegram_msg)
+            # إلغاء أي أوامر معلقة (مثل أرجل الـ Bracket) قبل البيع
+            open_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+            for o in open_orders:
+                self.client.cancel_order_by_id(o.id)
 
-            if not self.client:
-                self.set_symbol_state(symbol, "NONE")
-                return {"status": "telegram_sent_only", "reason": "Alpaca client not initialized"}
+            pos = next((p for p in self.client.get_all_positions() if p.symbol == symbol), None)
+            if not pos:
+                state.clear(symbol)
+                return {"status": "rejected", "reason": "لا يوجد مركز"}
 
-            positions = self.client.get_all_positions()
-            target_pos = next((p for p in positions if p.symbol.upper() == symbol), None)
-            
-            if not target_pos:
-                self.set_symbol_state(symbol, "NONE")
-                return {"status": "rejected", "reason": f"لا يوجد مركز مفتوح لـ {symbol}"}
-
-            qty = int(float(target_pos.qty))
-            limit_price = round(price * 0.995, 2)
-            client_order_id = f"bot_sell_{symbol}_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-
-            order_data = LimitOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.DAY,
-                limit_price=limit_price,
-                extended_hours=True,
-                client_order_id=client_order_id
-            )
-
-            order = self.client.submit_order(order_data)
-            self.set_symbol_state(symbol, "NONE")
-            print(f"📉 [بيع] تم إرسال أمر البيع لـ {symbol} | الكمية: {qty} | السعر: {limit_price}")
-            return {"status": "executed", "order_id": str(order.id), "qty": qty, "price": limit_price}
-
+            qty = float(pos.qty)
+            state.upsert(symbol, state="PENDING_SELL")
+            if phase == "REGULAR":
+                # في الجلسة الرسمية: إغلاق فوري بسعر السوق
+                self.client.close_position(symbol)
+            else:
+                px = ref_price or float(pos.current_price)
+                # في الممتد: Limit بخصم أكبر عند الوقف لضمان التنفيذ
+                discount = 0.985 if "وقف" in reason else 0.997
+                self.client.submit_order(LimitOrderRequest(
+                    symbol=symbol, qty=qty, side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                    limit_price=round(px * discount, 2), extended_hours=True,
+                    client_order_id=f"bot-exit-{symbol}-{int(time.time())}",
+                ))
+            log.info("SELL submitted %s qty=%s reason=%s", symbol, qty, reason)
+            state.upsert(symbol, order_id=reason)  # نحفظ السبب لرسالة الإغلاق
+            return {"status": "submitted", "qty": qty}
         except Exception as e:
-            self.set_symbol_state(symbol, "OPEN_POSITION")
-            print(f"❌ [خطأ البيع] {e}")
+            state.upsert(symbol, state="OPEN")
+            log.error("sell error %s: %s", symbol, e)
             return {"status": "error", "reason": str(e)}
 
-order_manager = OrderManager()
+    # ---------- تحديثات Alpaca اللحظية (trade_updates) ----------
+    async def on_trade_update(self, data):
+        event = data.event if isinstance(data.event, str) else data.event.value
+        o = data.order
+        symbol = o.symbol.upper()
+        side = o.side if isinstance(o.side, str) else o.side.value
+        row = state.get(symbol) or {}
+
+        if event == "fill":
+            px = float(o.filled_avg_price or 0)
+            qty = float(o.filled_qty or 0)
+            if side == "buy":
+                target, stop = strategy.exit_levels(px, settings)
+                if row.get("bracket"):
+                    # أرجل الـ Bracket محسوبة من سعر الحد؛ نعرضها كما هي
+                    target, stop = row.get("target", target), row.get("stop", stop)
+                state.upsert(symbol, state="OPEN", qty=qty, entry_price=px, target=target, stop=stop)
+                state.log_trade(symbol, "buy", qty, px, "entry")
+                alerts.entry_filled(symbol, qty, px, target, stop, "رسمية" if row.get("bracket") else "ممتد")
+                # توصية لمجموعة العملاء — معزولة تمامًا: أي خطأ هنا لا يؤثر على التداول
+                try:
+                    signals.send_signal(symbol, px, stop, target)
+                except Exception as sig_err:
+                    log.warning("signals: فشل إرسال التوصية (%s) — التداول مستمر", sig_err)
+            else:
+                reason = row.get("order_id") if row.get("state") == "PENDING_SELL" else "هدف/وقف Alpaca"
+                state.log_trade(symbol, "sell", qty, px, reason)
+                alerts.exit_filled(symbol, qty, row.get("entry_price", 0), px, reason)
+                state.clear(symbol)
+                state.set_cooldown(symbol, settings.symbol_cooldown_min)
+        elif event == "partial_fill" and side == "buy":
+            state.upsert(symbol, qty=float(o.filled_qty or 0))
+        elif event in ("canceled", "expired", "rejected"):
+            if side == "buy" and row.get("state") == "PENDING_BUY":
+                if float(o.filled_qty or 0) > 0:
+                    state.upsert(symbol, state="OPEN", qty=float(o.filled_qty),
+                                 entry_price=float(o.filled_avg_price or 0))
+                else:
+                    state.clear(symbol)
+            elif side == "sell" and row.get("state") == "PENDING_SELL":
+                state.upsert(symbol, state="OPEN")
+            log.info("order %s %s %s", event, side, symbol)
+
+    # ---------- الصيانة الدورية ----------
+    def cancel_stale_entries(self):
+        for row in state.active():
+            if row["state"] == "PENDING_BUY" and time.time() - (row["updated_at"] or 0) > settings.entry_timeout_sec:
+                try:
+                    if row.get("order_id"):
+                        self.client.cancel_order_by_id(row["order_id"])
+                except Exception as e:
+                    log.warning("cancel stale %s: %s", row["symbol"], e)
+
+    def reconcile(self):
+        """مطابقة قاعدة البيانات مع المراكز الفعلية في Alpaca (Alpaca هي المرجع)."""
+        positions = {p.symbol.upper(): p for p in self.client.get_all_positions()}
+        for row in state.active():
+            if row["state"] == "OPEN" and row["symbol"] not in positions:
+                state.clear(row["symbol"])
+        for sym, p in positions.items():
+            row = state.get(sym)
+            if not row or row["state"] == "NONE":
+                entry = float(p.avg_entry_price)
+                target, stop = strategy.exit_levels(entry, settings)
+                state.upsert(sym, state="OPEN", qty=float(p.qty), entry_price=entry, target=target, stop=stop)

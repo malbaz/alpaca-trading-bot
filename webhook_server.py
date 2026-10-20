@@ -1,65 +1,52 @@
-import os
-import sys
+"""
+استقبال إشارات خارجية (مثل TradingView) — تمر بنفس محرك المخاطر ومدير الأوامر.
+كلمة السر إلزامية، ولا تُطبع في السجلات.
+"""
+import hmac
+import logging
+
 from flask import Flask, request, jsonify
-from order_manager import order_manager
 
-app = Flask(__name__)
+import broker
+from config import settings
 
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE", "mysecret123").strip()
+log = logging.getLogger("webhook")
 
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"status": "online", "message": "Server is running"}), 200
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        data = request.get_json(force=True) or {}
-        
-        # التحقق من كلمة السر
-        incoming_pass = str(data.get("passphrase", "") or data.get("secret", "") or data.get("token", "")).strip()
-        
-        if WEBHOOK_PASSPHRASE and incoming_pass != WEBHOOK_PASSPHRASE:
-            print(f"⚠️ محاولة وصول غير مصرح بها (Pass: '{incoming_pass}')", flush=True)
+def create_app(orders):
+    app = Flask(__name__)
+
+    @app.get("/")
+    def health():
+        return jsonify({"status": "online", "paper": settings.paper}), 200
+
+    @app.post("/webhook")
+    def webhook():
+        data = request.get_json(silent=True) or {}
+        incoming = str(data.get("passphrase") or request.headers.get("X-Webhook-Secret") or "")
+        if not settings.webhook_passphrase or not hmac.compare_digest(incoming, settings.webhook_passphrase):
+            log.warning("unauthorized webhook from %s", request.remote_addr)
             return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
-        ticker = data.get("ticker") or data.get("symbol")
-        action = (data.get("action") or data.get("side") or "").lower()
-        price = float(data.get("price", 0))
-        quantity = int(data.get("quantity") or data.get("qty") or 1)
+        symbol = str(data.get("ticker") or data.get("symbol") or "").upper().strip()
+        action = str(data.get("action") or data.get("side") or "").lower().strip()
+        if not symbol.isalpha() or len(symbol) > 6 or action not in ("buy", "sell", "close"):
+            return jsonify({"status": "error", "message": "invalid ticker/action"}), 400
 
-        # قراءة الأهداف ووقف الخسارة من الـ Webhook إن وجدت
-        target1 = data.get("target1")
-        target2 = data.get("target2")
-        target3 = data.get("target3")
-        stop_loss = data.get("stop_loss")
+        try:
+            phase = broker.market_phase()
+            snap = broker.snapshots([symbol]).get(symbol)
+            if not snap or not snap.latest_quote:
+                return jsonify({"status": "error", "message": "no market data"}), 400
+            q = snap.latest_quote
+            price = float(snap.latest_trade.price) if snap.latest_trade else float(q.ask_price)
+            if action == "buy":
+                res = orders.buy(symbol, price, float(q.ask_price or price), phase, source="webhook")
+            else:
+                res = orders.sell(symbol, "إشارة Webhook", ref_price=float(q.bid_price or price), phase=phase)
+            return jsonify({"status": "ok", "result": res}), 200
+        except Exception as e:
+            log.exception("webhook error")
+            return jsonify({"status": "error", "message": str(e)}), 500
 
-        if not ticker or not action:
-            return jsonify({"status": "error", "message": "Missing ticker or action"}), 400
-
-        print(f"📩 [Webhook Signal Received] {ticker} | Action: {action} | Price: {price}", flush=True)
-
-        if action == "buy":
-            result = order_manager.process_buy_signal(
-                symbol=ticker, 
-                price=price, 
-                budget=25.0,
-                target1=target1,
-                target2=target2,
-                target3=target3,
-                stop_loss=stop_loss
-            )
-            return jsonify({"status": "success", "result": result}), 200
-        elif action in ["sell", "close"]:
-            result = order_manager.process_sell_signal(ticker, price)
-            return jsonify({"status": "success", "result": result}), 200
-        else:
-            return jsonify({"status": "error", "message": f"Unknown action '{action}'"}), 400
-
-    except Exception as e:
-        print(f"❌ خطأ في معالجة الـ Webhook: {e}", flush=True)
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    return app
