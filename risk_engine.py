@@ -38,12 +38,19 @@ class RiskEngine:
         if change <= -settings.max_daily_loss_pct and not self.kill_switch:
             self.kill_switch = True
             log.error("KILL SWITCH: daily change %.2f%%", change)
-            alerts.system(f"تفعيل الإيقاف الطارئ: الخسارة اليومية {change:.2f}%. سيتم إغلاق كل المراكز.")
+            # Emergency action must not depend on Telegram or cancel_orders succeeding.
             try:
                 self.client.cancel_orders()
+            except Exception as e:
+                log.error("cancel_orders failed: %s", e)
+            try:
                 self.client.close_all_positions(cancel_orders=True)
             except Exception as e:
                 log.error("close_all failed: %s", e)
+            try:
+                alerts.system(f"تفعيل الإيقاف الطارئ: الخسارة اليومية {change:.2f}%. طُلب إغلاق كل المراكز؛ راجع حالة الأوامر في Alpaca.")
+            except Exception as e:
+                log.error("kill switch notification failed: %s", e)
         return not self.kill_switch
 
     def check_pdt(self) -> bool:
