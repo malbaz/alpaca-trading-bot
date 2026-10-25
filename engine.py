@@ -3,8 +3,13 @@
 دورة واحدة كل SCAN_INTERVAL_SEC:
   1) تحديد مرحلة السوق من ساعة Alpaca
   2) مطابقة المراكز + إلغاء أوامر الشراء المتأخرة
-  3) إدارة الخروج في التداول الممتد (في الرسمية يتكفل بها Bracket)
+  3) إدارة الخروج: وقف ثابت ثم وقف متحرك بعد ربح TRAIL_ACTIVATE_PCT
   4) البحث عن فرص جديدة بطلبات مجمعة لكل الأسهم
+
+قواعد منع البيع المبكر:
+- فحص الخروج على متوسط السعر (mid) وليس سعر الطلب (bid) الذي يهبط لحظيًا.
+- لا خروج محلي إذا كان السبريد أوسع من MAX_SPREAD_EXIT_PCT (هبوط وهمي).
+- الوقف المتحرك لا ينزل أبدًا: بعد التفعيل أسوأ نتيجة هي التعادل.
 """
 import logging
 import time
@@ -25,16 +30,61 @@ class Engine:
 
     def manage_exits(self, phase: str, snaps):
         for row in state.active():
-            if row["state"] != "OPEN" or row.get("bracket") and phase == "REGULAR":
+            if row["state"] != "OPEN":
                 continue
-            snap = snaps.get(row["symbol"])
+            symbol = row["symbol"]
+            snap = snaps.get(symbol)
             if not snap or not snap.latest_quote:
                 continue
-            bid = float(snap.latest_quote.bid_price or 0)  # البيع يتم على سعر الطلب
-            reason = strategy.should_exit(row["entry_price"], bid, settings)
-            if reason:
-                log.info("exit %s: %s", row["symbol"], reason)
-                self.orders.sell(row["symbol"], reason, ref_price=bid, phase=phase)
+            q = snap.latest_quote
+            bid = float(q.bid_price or 0)
+            ask = float(q.ask_price or 0)
+            if bid <= 0 or ask <= 0:
+                continue
+            # سبريد واسع = أسعار غير موثوقة؛ لا نبيع على هبوط وهمي
+            if strategy.spread_pct(bid, ask) > settings.max_spread_exit_pct:
+                continue
+            mid = (bid + ask) / 2
+            entry = float(row["entry_price"] or 0)
+            if entry <= 0:
+                continue
+
+            # تتبع أعلى سعر وصله السهم منذ الدخول
+            peak = max(float(row.get("peak_price") or 0), mid)
+            if peak != float(row.get("peak_price") or 0):
+                state.upsert(symbol, peak_price=peak)
+
+            # 1) الوقف الثابت الأصلي — الحماية الأولى قبل التفعيل
+            if not row.get("trailing") and mid <= float(row.get("stop") or 0):
+                change = (mid - entry) / entry * 100
+                reason = f"وقف خسارة ({change:.2f}%)"
+                log.info("exit %s: %s", symbol, reason)
+                self.orders.sell(symbol, reason, ref_price=mid, phase=phase)
+                continue
+
+            # 2) تفعيل الوقف المتحرك عند بلوغ ربح TRAIL_ACTIVATE_PCT
+            if not row.get("trailing"):
+                if strategy.trailing_stop_level(entry, peak, settings) is not None:
+                    if phase == "REGULAR":
+                        # يستبدل الـ Bracket بأمر Stop محفوظ لدى Alpaca عند التعادل
+                        self.orders.activate_trailing(symbol)
+                    else:
+                        # الممتد: لا أوامر Stop لدى Alpaca — تتبع محلي فقط
+                        state.upsert(symbol, trailing=1)
+                continue
+
+            # 3) الوقف المتحرك بعد التفعيل
+            tstop = strategy.trailing_stop_level(entry, peak, settings)
+            if tstop is None:
+                continue
+            if mid <= tstop:
+                change = (mid - entry) / entry * 100
+                reason = f"وقف متحرك ({change:+.2f}%)"
+                log.info("exit %s: %s", symbol, reason)
+                self.orders.sell(symbol, reason, ref_price=mid, phase=phase)
+            elif phase == "REGULAR":
+                # رفع أمر الوقف المحفوظ لدى Alpaca مع صعود السعر
+                self.orders.update_trailing(symbol, tstop)
 
     def scan(self, phase: str, snaps):
         if state.active_count() >= settings.max_open_positions:
