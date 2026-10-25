@@ -3,8 +3,11 @@
 
 - الجلسة الرسمية: أمر Bracket (شراء + هدف + وقف) محفوظ لدى Alpaca نفسها،
   فيعمل الوقف حتى لو توقف البوت.
+- الوقف المتحرك: عند ربح TRAIL_ACTIVATE_PCT يُلغى الـ Bracket ويُستبدل
+  بأمر Stop محفوظ لدى Alpaca عند التعادل، ثم يُرفع مع صعود السعر.
+  الأمر محفوظ لدى Alpaca لذا تبقى الحماية حتى لو توقف البوت.
 - التداول الممتد: Alpaca لا تدعم Bracket ولا أوامر Stop، فنستخدم Limit
-  ويراقب المحرك الهدف والوقف كل دورة.
+  ويراقب المحرك الهدف والوقف كل دورة (معطّل افتراضيًا من الإعدادات).
 """
 import logging
 import time
@@ -12,7 +15,8 @@ import uuid
 from typing import Dict, Any
 
 from alpaca.trading.requests import (
-    LimitOrderRequest, TakeProfitRequest, StopLossRequest, GetOrdersRequest,
+    LimitOrderRequest, StopOrderRequest, TakeProfitRequest, StopLossRequest,
+    GetOrdersRequest, ReplaceOrderRequest,
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
 
@@ -72,7 +76,8 @@ class OrderManager:
             order = self.client.submit_order(req)
             state.upsert(symbol, state="PENDING_BUY", qty=qty, target=target, stop=stop,
                          order_id=str(order.id), client_order_id=coid,
-                         bracket=1 if phase == "REGULAR" else 0)
+                         bracket=1 if phase == "REGULAR" else 0,
+                         trailing=0, peak_price=0, stop_order_id=None)
             log.info("BUY submitted %s qty=%s limit=%s phase=%s src=%s", symbol, qty, limit, phase, source)
             return {"status": "submitted", "order_id": str(order.id), "qty": qty, "limit": limit}
         except Exception as e:
@@ -87,7 +92,7 @@ class OrderManager:
         if row and row["state"] == "PENDING_SELL":
             return {"status": "rejected", "reason": "البيع جارٍ بالفعل"}
         try:
-            # إلغاء أي أوامر معلقة (مثل أرجل الـ Bracket) قبل البيع
+            # إلغاء أي أوامر معلقة (أرجل الـ Bracket أو أمر الوقف المتحرك) قبل البيع
             open_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
             for o in open_orders:
                 self.client.cancel_order_by_id(o.id)
@@ -119,6 +124,54 @@ class OrderManager:
             log.error("sell error %s: %s", symbol, e)
             return {"status": "error", "reason": str(e)}
 
+    # ---------- الوقف المتحرك ----------
+    def activate_trailing(self, symbol: str):
+        """يُلغي أرجل الـ Bracket ويضع أمر Stop محفوظًا لدى Alpaca عند التعادل.
+
+        يُستدعى عندما يبلغ الربح TRAIL_ACTIVATE_PCT. بعدها يرفع المحرك
+        الوقف عبر update_trailing مع صعود السعر، ولا ينزله أبدًا.
+        عند الفشل يبقى الـ Bracket الأصلي كما هو (لا فقدان للحماية).
+        """
+        symbol = symbol.upper()
+        row = state.get(symbol)
+        if not row or row["state"] != "OPEN" or row.get("trailing"):
+            return
+        try:
+            open_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+            for o in open_orders:
+                self.client.cancel_order_by_id(o.id)
+            entry = float(row["entry_price"])
+            qty = float(row["qty"])
+            breakeven = round(entry * strategy.BREAKEVEN_BUFFER, 2)
+            order = self.client.submit_order(StopOrderRequest(
+                symbol=symbol, qty=qty, side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC, stop_price=breakeven,
+                client_order_id=f"bot-trail-{symbol}-{int(time.time())}",
+            ))
+            state.upsert(symbol, trailing=1, bracket=0, stop=breakeven,
+                         stop_order_id=str(order.id))
+            log.info("trailing activated %s entry=%s stop=%s", symbol, entry, breakeven)
+            alerts.system(f"🔒 {symbol}: تفعيل الوقف المتحرك — الوقف عند التعادل {breakeven}$ والربح محمي")
+        except Exception as e:
+            log.error("activate_trailing %s: %s", symbol, e)
+
+    def update_trailing(self, symbol: str, new_stop: float):
+        """يرفع أمر الوقف المتحرك لدى Alpaca. لا يُنزِل الوقف أبدًا."""
+        symbol = symbol.upper()
+        row = state.get(symbol)
+        if not row or not row.get("stop_order_id"):
+            return
+        new_stop = round(new_stop, 2)
+        if new_stop <= float(row.get("stop") or 0) + 0.005:
+            return  # لا تغيير يستحق أو محاولة إنزال
+        try:
+            self.client.replace_order_by_id(
+                row["stop_order_id"], ReplaceOrderRequest(stop_price=new_stop))
+            state.upsert(symbol, stop=new_stop)
+            log.info("trailing stop raised %s -> %s", symbol, new_stop)
+        except Exception as e:
+            log.warning("update_trailing %s: %s", symbol, e)
+
     # ---------- تحديثات Alpaca اللحظية (trade_updates) ----------
     async def on_trade_update(self, data):
         event = data.event if isinstance(data.event, str) else data.event.value
@@ -135,7 +188,8 @@ class OrderManager:
                 if row.get("bracket"):
                     # أرجل الـ Bracket محسوبة من سعر الحد؛ نعرضها كما هي
                     target, stop = row.get("target", target), row.get("stop", stop)
-                state.upsert(symbol, state="OPEN", qty=qty, entry_price=px, target=target, stop=stop)
+                state.upsert(symbol, state="OPEN", qty=qty, entry_price=px,
+                             target=target, stop=stop, peak_price=px)
                 state.log_trade(symbol, "buy", qty, px, "entry")
                 alerts.entry_filled(symbol, qty, px, target, stop, "رسمية" if row.get("bracket") else "ممتد")
                 # توصية لمجموعة العملاء — معزولة تمامًا: أي خطأ هنا لا يؤثر على التداول
@@ -145,6 +199,8 @@ class OrderManager:
                     log.warning("signals: فشل إرسال التوصية (%s) — التداول مستمر", sig_err)
             else:
                 reason = row.get("order_id") if row.get("state") == "PENDING_SELL" else "هدف/وقف Alpaca"
+                if row.get("trailing") and row.get("state") != "PENDING_SELL":
+                    reason = "وقف متحرك"
                 state.log_trade(symbol, "sell", qty, px, reason)
                 alerts.exit_filled(symbol, qty, row.get("entry_price", 0), px, reason)
                 state.clear(symbol)
@@ -183,4 +239,5 @@ class OrderManager:
             if not row or row["state"] == "NONE":
                 entry = float(p.avg_entry_price)
                 target, stop = strategy.exit_levels(entry, settings)
-                state.upsert(sym, state="OPEN", qty=float(p.qty), entry_price=entry, target=target, stop=stop)
+                state.upsert(sym, state="OPEN", qty=float(p.qty), entry_price=entry,
+                             target=target, stop=stop, peak_price=float(p.current_price or entry))
