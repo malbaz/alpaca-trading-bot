@@ -8,6 +8,8 @@ from config import Settings
 
 MIN_STOP_PCT = 3.0
 MIN_REWARD_RISK = 2.0
+# هامش فوق سعر الدخول عند رفع الوقف للتعادل (يغطي الرسوم والانزلاق)
+BREAKEVEN_BUFFER = 1.002
 
 
 @dataclass
@@ -98,8 +100,24 @@ def position_qty(price: float, buying_power: float, s: Settings) -> int:
     return max(0, min(by_budget, by_risk))
 
 
+def trailing_stop_level(entry: float, peak: float, s: Settings) -> Optional[float]:
+    """مستوى الوقف المتحرك: None قبل التفعيل، وبعده لا ينزل أبدًا عن التعادل.
+
+    التفعيل عندما يبلغ أعلى سعر (peak) ربح TRAIL_ACTIVATE_PCT.
+    بعدها الوقف = الأعلى بين (التعادل + هامش) و (peak - TRAIL_BACK_PCT).
+    """
+    if not isfinite(entry) or not isfinite(peak) or entry <= 0 or peak <= 0:
+        return None
+    if peak < entry * (1 + s.trail_activate_pct / 100):
+        return None
+    return max(entry * BREAKEVEN_BUFFER, peak * (1 - s.trail_back_pct / 100))
+
+
 def should_exit(entry: float, current: float, s: Settings) -> Optional[str]:
-    """Local extended-hours checks use exactly the same planned price levels."""
+    """الفحص المحلي للوقف الثابت والهدف (يُستخدم قبل تفعيل الوقف المتحرك).
+
+    بعد تفعيل الوقف المتحرك يستخدم المحرك trailing_stop_level بدلًا من هذا.
+    """
     if not isfinite(entry) or not isfinite(current) or entry <= 0 or current <= 0:
         return None
     target, stop = exit_levels(entry, s)
