@@ -27,6 +27,13 @@ def _conn():
 _db = _conn()
 
 
+def _ensure_column(table: str, name: str, ddl: str):
+    """إضافة عمود لجدول موجود دون فقدان البيانات (ترقية آمنة)."""
+    cols = [r["name"] for r in _db.execute(f"PRAGMA table_info({table})")]
+    if name not in cols:
+        _db.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init():
     with _lock:
         _db.executescript("""
@@ -51,6 +58,10 @@ def init():
             symbol TEXT PRIMARY KEY, until REAL
         );
         """)
+        # أعمدة الوقف المتحرك (تُضاف تلقائيًا للقواعد القديمة)
+        _ensure_column("positions", "peak_price", "peak_price REAL DEFAULT 0")
+        _ensure_column("positions", "trailing", "trailing INTEGER DEFAULT 0")
+        _ensure_column("positions", "stop_order_id", "stop_order_id TEXT")
         _db.commit()
 
 
