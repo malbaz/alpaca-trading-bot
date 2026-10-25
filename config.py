@@ -96,7 +96,7 @@ class Settings:
     min_momentum_pct: float = field(default_factory=lambda: _env_float("MIN_MOMENTUM_PCT", 3.0))
     # حجم آخر 10 دقائق. على بيانات iex المجانية ابقِه صغيرًا (ترى 2-3٪ من السوق)
     min_volume_10m: int = field(default_factory=lambda: _env_int("MIN_VOLUME_10M", 20000))
-    # أقصى فرق بين العرض والطلب (٪)
+    # أقصى فرق بين العرض والطلب (٪) عند الدخول
     max_spread_pct: float = field(default_factory=lambda: _env_float("MAX_SPREAD_PCT", 0.60))
 
     # === الحجم والمخاطرة ===
@@ -120,9 +120,18 @@ class Settings:
     # أوامر الشراء المعلّقة التي لم تُنفَّذ تُلغى بعد هذه المدة (ثوانٍ)
     entry_timeout_sec: int = field(default_factory=lambda: _env_int("ENTRY_TIMEOUT_SEC", 90))
 
+    # === الوقف المتحرك (حماية المكاسب) ===
+    # عند وصول الربح إلى هذه النسبة يُرفع الوقف إلى سعر الدخول (تعادل) ويبدأ التتبع
+    trail_activate_pct: float = field(default_factory=lambda: _env_float("TRAIL_ACTIVATE_PCT", 3.0))
+    # المسافة التي يتراجع عنها الوقف المتحرك تحت أعلى سعر وصله السهم (٪)
+    trail_back_pct: float = field(default_factory=lambda: _env_float("TRAIL_BACK_PCT", 1.5))
+    # لا يُنفَّذ أي خروج محلي إذا كان السبريد أوسع من هذه النسبة (هبوط وهمي)
+    max_spread_exit_pct: float = field(default_factory=lambda: _env_float("MAX_SPREAD_EXIT_PCT", 1.0))
+
     # === المحرك ===
     scan_interval_sec: int = field(default_factory=lambda: _env_int("SCAN_INTERVAL_SEC", 30))
-    trade_extended_hours: bool = field(default_factory=lambda: _env_bool("TRADE_EXTENDED_HOURS", True))
+    # التداول الممتد معطّل افتراضيًا: لا أوامر وقف لدى Alpaca وسبريد واسع = بيع مبكر
+    trade_extended_hours: bool = field(default_factory=lambda: _env_bool("TRADE_EXTENDED_HOURS", False))
 
     # === قاعدة البيانات ===
     # على Railway ضع: /data/bot_state.db (بعد إضافة Volume)
@@ -163,6 +172,10 @@ def validate_settings(s: "Settings" = None) -> List[str]:
         errors.append("نسب وقف الخسارة وجني الربح يجب أن تكون أكبر من صفر")
     if s.max_spread_pct <= 0:
         errors.append("MAX_SPREAD_PCT يجب أن يكون أكبر من صفر")
+    if s.trail_activate_pct <= 0 or s.trail_back_pct <= 0:
+        errors.append("نسب الوقف المتحرك يجب أن تكون أكبر من صفر")
+    if s.trail_back_pct >= s.trail_activate_pct:
+        errors.append("TRAIL_BACK_PCT يجب أن يكون أصغر من TRAIL_ACTIVATE_PCT")
     if not s.watchlist:
         errors.append("قائمة المراقبة WATCHLIST فارغة")
     if s.max_open_positions < 1:
