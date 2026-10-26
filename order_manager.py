@@ -140,8 +140,23 @@ class OrderManager:
             open_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
             for o in open_orders:
                 self.client.cancel_order_by_id(o.id)
+            # انتظر حتى تُحرَّر الأسهم من الأوامر الملغاة (حتى 10 ثوانٍ)
             entry = float(row["entry_price"])
             qty = float(row["qty"])
+            released = False
+            for _ in range(20):
+                time.sleep(0.5)
+                still = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+                try:
+                    avail = float(self.client.get_open_position(symbol).qty_available or 0)
+                except Exception:
+                    avail = 0.0
+                if not still and avail >= qty:
+                    released = True
+                    break
+            if not released:
+                log.warning("activate_trailing %s: shares not released yet, retry next cycle", symbol)
+                return
             breakeven = round(entry * strategy.BREAKEVEN_BUFFER, 2)
             order = self.client.submit_order(StopOrderRequest(
                 symbol=symbol, qty=qty, side=OrderSide.SELL,
