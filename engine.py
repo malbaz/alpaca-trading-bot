@@ -13,6 +13,8 @@
 """
 import logging
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import alerts
 import broker
@@ -86,7 +88,18 @@ class Engine:
                 # رفع أمر الوقف المحفوظ لدى Alpaca مع صعود السعر
                 self.orders.update_trailing(symbol, tstop)
 
+    @staticmethod
+    def entry_window_open(now_et=None) -> bool:
+        """الجلسة الرسمية فقط: لا شراء أول SKIP_OPEN_MIN ولا آخر NO_ENTRY_BEFORE_CLOSE_MIN دقيقة."""
+        now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
+        m = now_et.hour * 60 + now_et.minute
+        start = 9 * 60 + 30 + settings.skip_open_min
+        end = 16 * 60 - settings.no_entry_before_close_min
+        return start <= m < end
+
     def scan(self, phase: str, snaps):
+        if phase == "REGULAR" and not self.entry_window_open():
+            return
         if state.active_count() >= settings.max_open_positions:
             return
         candidates = [s for s in settings.watchlist
