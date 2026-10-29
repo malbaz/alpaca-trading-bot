@@ -29,7 +29,8 @@ def spread_pct(bid: float, ask: float) -> float:
 
 
 def evaluate(symbol: str, closes: Sequence[float], volumes: Sequence[int],
-             bid: float, ask: float, s: Settings) -> Optional[Signal]:
+             bid: float, ask: float, s: Settings,
+             day_high: Optional[float] = None) -> Optional[Signal]:
     """One-minute bars, oldest first. No ATR/daily-change data supplied here."""
     w = s.momentum_window_min
     if w < 1 or len(closes) < max(w + 1, 10) or len(volumes) != len(closes):
@@ -55,6 +56,10 @@ def evaluate(symbol: str, closes: Sequence[float], volumes: Sequence[int],
     avg_prev = sum(prev) / len(prev) if prev else 0
     if avg_prev > 0 and volumes[-1] < avg_prev * s.volume_surge_mult:
         return None
+    # اختراق قمة اليوم (High of Day): لا نشتري سهمًا بعيدًا عن أعلى سعر يومي
+    if day_high is not None and isfinite(float(day_high)) and day_high > 0:
+        if price < float(day_high) * (1 - s.near_hod_pct / 100):
+            return None
     if spread_pct(bid, ask) > s.max_spread_pct:
         return None
     return Signal(symbol, price, round(momentum, 2), vol10, bid, ask)
@@ -106,7 +111,45 @@ def position_qty(price: float, buying_power: float, s: Settings) -> int:
     return max(0, min(by_budget, by_risk))
 
 
-def trailing_stop_level(entry: float, peak: float, s: Settings) -> Optional[float]:
+def partial_qty(qty: float, s: Settings) -> int:
+    """عدد الأسهم التي تُباع عند جني الربح الجزئي. 0 = الكمية لا تقبل التقسيم."""
+    try:
+        q = int(float(qty))
+    except (TypeError, ValueError):
+        return 0
+    if q < 2 or not (0 < s.partial_sell_pct < 100):
+        return 0
+    return max(1, min(q - 1, int(q * s.partial_sell_pct / 100)))
+
+
+def merge_universe(watchlist, gainers, actives, s: Settings):
+    """يدمج القائمة الثابتة مع الأكثر صعودًا والأكثر نشاطًا.
+
+    gainers: [(symbol, percent_change, price)] | actives: [symbol]
+    الأكثر نشاطًا يُضاف فقط إذا كان أيضًا صاعدًا في قائمة الأكثر صعودًا أو ضمن القائمة الثابتة.
+    """
+    out = [x.upper() for x in watchlist]
+    seen = set(out)
+    picked = []
+    for sym, chg, px in sorted(gainers, key=lambda g: g[1], reverse=True):
+        sym = (sym or "").upper()
+        if not sym.isalpha() or sym in seen:
+            continue
+        if chg is None or chg < s.min_day_change_pct:
+            continue
+        if px is None or not (s.min_price <= px <= s.max_price):
+            continue
+        picked.append(sym); seen.add(sym)
+    gain_set = {g[0].upper() for g in gainers if g[1] is not None and g[1] >= s.min_day_change_pct}
+    for sym in actives:
+        sym = (sym or "").upper()
+        if sym in gain_set and sym not in seen and sym.isalpha():
+            picked.append(sym); seen.add(sym)
+    return out + picked[: max(0, s.movers_max_symbols)]
+
+
+def trailing_stop_level(entry: float, peak: float, s: Settings,
+                        active: bool = False) -> Optional[float]:
     """مستوى الوقف المتحرك: None قبل التفعيل، وبعده لا ينزل أبدًا عن التعادل.
 
     التفعيل عندما يبلغ أعلى سعر (peak) ربح TRAIL_ACTIVATE_PCT.
@@ -114,7 +157,8 @@ def trailing_stop_level(entry: float, peak: float, s: Settings) -> Optional[floa
     """
     if not isfinite(entry) or not isfinite(peak) or entry <= 0 or peak <= 0:
         return None
-    if peak < entry * (1 + s.trail_activate_pct / 100):
+    # active=True: الوقف المتحرك مفعّل مسبقًا (مثلًا بعد جني الربح الجزئي)
+    if not active and peak < entry * (1 + s.trail_activate_pct / 100):
         return None
     return max(entry * BREAKEVEN_BUFFER, peak * (1 - s.trail_back_pct / 100))
 
