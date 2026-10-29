@@ -29,6 +29,23 @@ class Engine:
     def __init__(self, orders):
         self.orders = orders
         self.running = True
+        self.universe = list(settings.watchlist)
+        self._movers_at = 0.0
+
+    def refresh_universe(self):
+        """القائمة الثابتة + الأكثر صعودًا/نشاطًا لحظيًا. عند فشل Alpaca تبقى القائمة الثابتة."""
+        if not settings.scan_movers:
+            self.universe = list(settings.watchlist)
+            return
+        if time.time() - self._movers_at < settings.movers_refresh_sec:
+            return
+        self._movers_at = time.time()
+        gainers, actives = broker.top_movers(settings.movers_top)
+        new = strategy.merge_universe(settings.watchlist, gainers, actives, settings)
+        added = [s for s in new if s not in settings.watchlist]
+        if added:
+            log.info("movers added: %s", ",".join(added))
+        self.universe = new
 
     def manage_exits(self, phase: str, snaps):
         for row in state.active():
@@ -64,9 +81,18 @@ class Engine:
                 self.orders.sell(symbol, reason, ref_price=mid, phase=phase)
                 continue
 
-            # 2) تفعيل الوقف المتحرك عند بلوغ ربح TRAIL_ACTIVATE_PCT
+            # 2) جني ربح جزئي: بيع نصف الكمية عند PARTIAL_TP_PCT ثم وقف متحرك للباقي
+            gain = (peak - entry) / entry * 100
+            if (not row.get("trailing") and not row.get("partial_done") and phase == "REGULAR"
+                    and strategy.partial_qty(row.get("qty") or 0, settings) > 0
+                    and gain >= settings.partial_tp_pct):
+                self.orders.activate_trailing(symbol, partial=True)
+                continue
+
+            # 3) تفعيل الوقف المتحرك عند بلوغ ربح TRAIL_ACTIVATE_PCT (الكمية لا تقبل التقسيم)
             if not row.get("trailing"):
-                if strategy.trailing_stop_level(entry, peak, settings) is not None:
+                # بعد بيع جزئي بلا وقف ناجح: نضع الوقف فورًا للباقي
+                if row.get("partial_done") or strategy.trailing_stop_level(entry, peak, settings) is not None:
                     if phase == "REGULAR":
                         # يستبدل الـ Bracket بأمر Stop محفوظ لدى Alpaca عند التعادل
                         self.orders.activate_trailing(symbol)
@@ -75,8 +101,8 @@ class Engine:
                         state.upsert(symbol, trailing=1)
                 continue
 
-            # 3) الوقف المتحرك بعد التفعيل
-            tstop = strategy.trailing_stop_level(entry, peak, settings)
+            # 4) الوقف المتحرك بعد التفعيل — بلا سقف للربح
+            tstop = strategy.trailing_stop_level(entry, peak, settings, active=True)
             if tstop is None:
                 continue
             if mid <= tstop:
@@ -102,7 +128,7 @@ class Engine:
             return
         if state.active_count() >= settings.max_open_positions:
             return
-        candidates = [s for s in settings.watchlist
+        candidates = [s for s in self.universe
                       if state.state_of(s) == "NONE" and not state.in_cooldown(s)]
         bars = broker.minute_bars(candidates, minutes=15)
         signals = []
@@ -112,8 +138,10 @@ class Engine:
             if not b or not snap or not snap.latest_quote:
                 continue
             q = snap.latest_quote
+            day_high = float(snap.daily_bar.high) if getattr(snap, "daily_bar", None) else None
             sig = strategy.evaluate(sym, [x.close for x in b], [int(x.volume) for x in b],
-                                    float(q.bid_price or 0), float(q.ask_price or 0), settings)
+                                    float(q.bid_price or 0), float(q.ask_price or 0), settings,
+                                    day_high=day_high)
             if sig:
                 signals.append(sig)
         # الأقوى زخماً أولاً
@@ -129,7 +157,8 @@ class Engine:
             return phase
         self.orders.reconcile()
         self.orders.cancel_stale_entries()
-        symbols = list({*settings.watchlist, *[r["symbol"] for r in state.active()]})
+        self.refresh_universe()
+        symbols = list({*self.universe, *[r["symbol"] for r in state.active()]})
         snaps = broker.snapshots(symbols)
         self.manage_exits(phase, snaps)
         self.scan(phase, snaps)
