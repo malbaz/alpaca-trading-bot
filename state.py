@@ -62,6 +62,8 @@ def init():
         _ensure_column("positions", "peak_price", "peak_price REAL DEFAULT 0")
         _ensure_column("positions", "trailing", "trailing INTEGER DEFAULT 0")
         _ensure_column("positions", "stop_order_id", "stop_order_id TEXT")
+        # جني الربح الجزئي: 1 = بِيع جزء من الكمية بالفعل
+        _ensure_column("positions", "partial_done", "partial_done INTEGER DEFAULT 0")
         _db.commit()
 
 
