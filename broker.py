@@ -16,11 +16,39 @@ from alpaca.data.enums import DataFeed
 
 from config import settings
 
+try:
+    from alpaca.data.historical.screener import ScreenerClient
+    from alpaca.data.requests import MarketMoversRequest, MostActivesRequest
+except ImportError:  # نسخة قديمة من alpaca-py
+    ScreenerClient = None
+
 log = logging.getLogger("broker")
 
 trading = TradingClient(settings.api_key, settings.secret_key, paper=settings.paper)
 data = StockHistoricalDataClient(settings.api_key, settings.secret_key)
 FEED = DataFeed.SIP if settings.data_feed == "sip" else DataFeed.IEX
+
+
+screener = ScreenerClient(settings.api_key, settings.secret_key) if ScreenerClient else None
+
+
+def top_movers(top: int = 50):
+    """الأكثر صعودًا [(symbol, %change, price)] والأكثر نشاطًا [symbol]. فشل = قوائم فارغة."""
+    gainers, actives = [], []
+    if not screener:
+        return gainers, actives
+    top = max(1, min(50, int(top)))
+    try:
+        m = screener.get_market_movers(MarketMoversRequest(top=top))
+        gainers = [(g.symbol, float(g.percent_change), float(g.price)) for g in m.gainers]
+    except Exception as e:
+        log.warning("movers error: %s", e)
+    try:
+        a = screener.get_most_actives(MostActivesRequest(top=top))
+        actives = [x.symbol for x in a.most_actives]
+    except Exception as e:
+        log.warning("most actives error: %s", e)
+    return gainers, actives
 
 
 def _chunks(items: List[str], n: int = 100):
