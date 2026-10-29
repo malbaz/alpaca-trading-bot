@@ -15,7 +15,7 @@ import uuid
 from typing import Dict, Any
 
 from alpaca.trading.requests import (
-    LimitOrderRequest, StopOrderRequest, TakeProfitRequest, StopLossRequest,
+    MarketOrderRequest, LimitOrderRequest, StopOrderRequest, TakeProfitRequest, StopLossRequest,
     GetOrdersRequest, ReplaceOrderRequest,
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
@@ -125,7 +125,7 @@ class OrderManager:
             return {"status": "error", "reason": str(e)}
 
     # ---------- الوقف المتحرك ----------
-    def activate_trailing(self, symbol: str):
+    def activate_trailing(self, symbol: str, partial: bool = False):
         """يُلغي أرجل الـ Bracket ويضع أمر Stop محفوظًا لدى Alpaca عند التعادل.
 
         يُستدعى عندما يبلغ الربح TRAIL_ACTIVATE_PCT. بعدها يرفع المحرك
@@ -143,6 +143,11 @@ class OrderManager:
             # انتظر حتى تُحرَّر الأسهم من الأوامر الملغاة (حتى 10 ثوانٍ)
             entry = float(row["entry_price"])
             qty = float(row["qty"])
+            try:
+                # الكمية الفعلية لدى Alpaca هي المرجع (قد تتغير بعد بيع جزئي)
+                qty = float(self.client.get_open_position(symbol).qty)
+            except Exception:
+                pass
             released = False
             for _ in range(20):
                 time.sleep(0.5)
@@ -158,15 +163,30 @@ class OrderManager:
                 log.warning("activate_trailing %s: shares not released yet, retry next cycle", symbol)
                 return
             breakeven = round(entry * strategy.BREAKEVEN_BUFFER, 2)
+            sold = 0
+            if partial:
+                sold = strategy.partial_qty(qty, settings)
+                if sold > 0:
+                    # بيع جزء الكمية فورًا بسعر السوق لتأمين المكسب
+                    self.client.submit_order(MarketOrderRequest(
+                        symbol=symbol, qty=sold, side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                        client_order_id=f"bot-partial-{symbol}-{int(time.time())}",
+                    ))
+                    state.upsert(symbol, partial_done=1)
+                    log.info("partial take-profit %s sold=%s of %s", symbol, sold, qty)
+            remaining = qty - sold
             order = self.client.submit_order(StopOrderRequest(
-                symbol=symbol, qty=qty, side=OrderSide.SELL,
+                symbol=symbol, qty=remaining, side=OrderSide.SELL,
                 time_in_force=TimeInForce.GTC, stop_price=breakeven,
                 client_order_id=f"bot-trail-{symbol}-{int(time.time())}",
             ))
             state.upsert(symbol, trailing=1, bracket=0, stop=breakeven,
                          stop_order_id=str(order.id))
             log.info("trailing activated %s entry=%s stop=%s", symbol, entry, breakeven)
-            alerts.system(f"🔒 {symbol}: تفعيل الوقف المتحرك — الوقف عند التعادل {breakeven}$ والربح محمي")
+            if sold:
+                alerts.system(f"💰 {symbol}: جني ربح جزئي — بيع {sold} سهم، والباقي {remaining:g} بوقف متحرك (الوقف عند التعادل {breakeven}$)")
+            else:
+                alerts.system(f"🔒 {symbol}: تفعيل الوقف المتحرك — الوقف عند التعادل {breakeven}$ والربح محمي")
         except Exception as e:
             log.error("activate_trailing %s: %s", symbol, e)
 
@@ -212,6 +232,14 @@ class OrderManager:
                     signals.send_signal(symbol, px, stop, target)
                 except Exception as sig_err:
                     log.warning("signals: فشل إرسال التوصية (%s) — التداول مستمر", sig_err)
+            elif str(getattr(o, "client_order_id", "") or "").startswith("bot-partial-"):
+                # بيع جزئي: المركز ما زال مفتوحًا بالكمية الباقية
+                entry = float(row.get("entry_price") or 0)
+                left = max(0.0, float(row.get("qty") or 0) - qty)
+                state.log_trade(symbol, "sell", qty, px, "جني ربح جزئي")
+                state.upsert(symbol, qty=left)
+                pnl = (px - entry) * qty
+                alerts.system(f"💰 {symbol}: تم بيع {qty:g} سهم عند {px}$ (ربح {pnl:+.2f}$) — الباقي {left:g} يركب الموجة")
             else:
                 reason = row.get("order_id") if row.get("state") == "PENDING_SELL" else "هدف/وقف Alpaca"
                 if row.get("trailing") and row.get("state") != "PENDING_SELL":
