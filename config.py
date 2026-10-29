@@ -115,18 +115,28 @@ class Settings:
     symbol_cooldown_min: int = field(default_factory=lambda: _env_int("SYMBOL_COOLDOWN_MIN", 60))
 
     # === الخروج ===
-    take_profit_pct: float = field(default_factory=lambda: _env_float("TAKE_PROFIT_PCT", 4.5))
+    take_profit_pct: float = field(default_factory=lambda: _env_float("TAKE_PROFIT_PCT", 8.0))
     stop_loss_pct: float = field(default_factory=lambda: _env_float("STOP_LOSS_PCT", 2.5))
     # أوامر الشراء المعلّقة التي لم تُنفَّذ تُلغى بعد هذه المدة (ثوانٍ)
     entry_timeout_sec: int = field(default_factory=lambda: _env_int("ENTRY_TIMEOUT_SEC", 90))
 
     # === الوقف المتحرك (حماية المكاسب) ===
     # عند وصول الربح إلى هذه النسبة يُرفع الوقف إلى سعر الدخول (تعادل) ويبدأ التتبع
-    trail_activate_pct: float = field(default_factory=lambda: _env_float("TRAIL_ACTIVATE_PCT", 3.0))
+    trail_activate_pct: float = field(default_factory=lambda: _env_float("TRAIL_ACTIVATE_PCT", 4.5))
     # المسافة التي يتراجع عنها الوقف المتحرك تحت أعلى سعر وصله السهم (٪)
-    trail_back_pct: float = field(default_factory=lambda: _env_float("TRAIL_BACK_PCT", 1.5))
+    trail_back_pct: float = field(default_factory=lambda: _env_float("TRAIL_BACK_PCT", 3.0))
     # لا يُنفَّذ أي خروج محلي إذا كان السبريد أوسع من هذه النسبة (هبوط وهمي)
     max_spread_exit_pct: float = field(default_factory=lambda: _env_float("MAX_SPREAD_EXIT_PCT", 1.0))
+
+    # === نوافذ الدخول (بتوقيت نيويورك) ===
+    # لا شراء في أول N دقيقة بعد الافتتاح (فوضى الافتتاح)
+    skip_open_min: int = field(default_factory=lambda: _env_int("SKIP_OPEN_MIN", 15))
+    # لا شراء في آخر N دقيقة قبل الإغلاق (تجنب الاحتفاظ طوال الليل)
+    no_entry_before_close_min: int = field(default_factory=lambda: _env_int("NO_ENTRY_BEFORE_CLOSE_MIN", 30))
+    # طفرة السيولة: حجم آخر شمعة >= هذا المضاعف من متوسط الشموع السابقة
+    volume_surge_mult: float = field(default_factory=lambda: _env_float("VOLUME_SURGE_MULT", 2.0))
+    # السعر يجب أن يكون ضمن هذه النسبة من أعلى سعر في آخر 15 دقيقة (اختراق لا تراجع)
+    near_high_pct: float = field(default_factory=lambda: _env_float("NEAR_HIGH_PCT", 1.0))
 
     # === المحرك ===
     scan_interval_sec: int = field(default_factory=lambda: _env_int("SCAN_INTERVAL_SEC", 30))
