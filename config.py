@@ -87,6 +87,20 @@ class Settings:
     watchlist: List[str] = field(default_factory=lambda: _env_list(
         "WATCHLIST", DEFAULT_WATCHLIST))
 
+    # === الماسح اللحظي (Top Gainers + Most Active من Alpaca) ===
+    # true = يضيف الأسهم الأكثر صعودًا ونشاطًا لحظيًا إلى قائمة المراقبة
+    scan_movers: bool = field(default_factory=lambda: _env_bool("SCAN_MOVERS", True))
+    # عدد الأسهم المطلوبة من كل قائمة (حتى 50)
+    movers_top: int = field(default_factory=lambda: _env_int("MOVERS_TOP", 50))
+    # أقل ارتفاع يومي حتى يُضاف السهم من قائمة الأكثر صعودًا (٪)
+    min_day_change_pct: float = field(default_factory=lambda: _env_float("MIN_DAY_CHANGE_PCT", 5.0))
+    # تحديث قائمة الأكثر صعودًا كل N ثانية
+    movers_refresh_sec: int = field(default_factory=lambda: _env_int("MOVERS_REFRESH_SEC", 60))
+    # أقصى عدد أسهم تُضاف من الماسح (حماية من كثرة الطلبات)
+    movers_max_symbols: int = field(default_factory=lambda: _env_int("MOVERS_MAX_SYMBOLS", 40))
+    # السعر يجب أن يكون ضمن هذه النسبة من أعلى سعر في اليوم (High of Day)
+    near_hod_pct: float = field(default_factory=lambda: _env_float("NEAR_HOD_PCT", 1.5))
+
     # === فلترة الأسهم (معايير الدخول) ===
     min_price: float = field(default_factory=lambda: _env_float("MIN_PRICE", 1.50))
     max_price: float = field(default_factory=lambda: _env_float("MAX_PRICE", 16.00))
@@ -115,10 +129,16 @@ class Settings:
     symbol_cooldown_min: int = field(default_factory=lambda: _env_int("SYMBOL_COOLDOWN_MIN", 60))
 
     # === الخروج ===
-    take_profit_pct: float = field(default_factory=lambda: _env_float("TAKE_PROFIT_PCT", 8.0))
+    take_profit_pct: float = field(default_factory=lambda: _env_float("TAKE_PROFIT_PCT", 15.0))
     stop_loss_pct: float = field(default_factory=lambda: _env_float("STOP_LOSS_PCT", 2.5))
     # أوامر الشراء المعلّقة التي لم تُنفَّذ تُلغى بعد هذه المدة (ثوانٍ)
     entry_timeout_sec: int = field(default_factory=lambda: _env_int("ENTRY_TIMEOUT_SEC", 90))
+
+    # === جني الربح الجزئي ===
+    # عند ربح هذه النسبة يُباع جزء من الكمية فورًا لتأمين مكسب نقدي
+    partial_tp_pct: float = field(default_factory=lambda: _env_float("PARTIAL_TP_PCT", 3.5))
+    # نسبة الكمية التي تُباع عند جني الربح الجزئي (٪)
+    partial_sell_pct: float = field(default_factory=lambda: _env_float("PARTIAL_SELL_PCT", 50.0))
 
     # === الوقف المتحرك (حماية المكاسب) ===
     # عند وصول الربح إلى هذه النسبة يُرفع الوقف إلى سعر الدخول (تعادل) ويبدأ التتبع
