@@ -46,8 +46,14 @@ def evaluate(symbol: str, closes: Sequence[float], volumes: Sequence[int],
     vol10 = int(sum(volumes[-10:]))
     if momentum < s.min_momentum_pct or vol10 < s.min_volume_10m:
         return None
-    last_jump = (price - closes[-2]) / closes[-2] * 100
-    if last_jump > momentum * 0.8 and momentum > 0:
+    # اختراق عند القمة: لا نشتري سهمًا تراجع من موجته
+    recent_high = max(float(x) for x in closes[-15:])
+    if price < recent_high * (1 - s.near_high_pct / 100):
+        return None
+    # طفرة سيولة: حجم آخر شمعة أعلى بوضوح من متوسط ما قبلها
+    prev = [int(v) for v in volumes[-11:-1]]
+    avg_prev = sum(prev) / len(prev) if prev else 0
+    if avg_prev > 0 and volumes[-1] < avg_prev * s.volume_surge_mult:
         return None
     if spread_pct(bid, ask) > s.max_spread_pct:
         return None
