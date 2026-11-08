@@ -1,94 +1,82 @@
-import os
-import yfinance as yf
-from alpaca.trading.client import TradingClient
+"""
+محرك المخاطر: يُسأل قبل كل عملية شراء.
+- حد الخسارة اليومية (Kill Switch) — ويُغلق المراكز عند تفعيله.
+- قاعدة PDT للحسابات الأقل من 25 ألف دولار.
+- عدد صفقات يومي أقصى.
+نتيجة فحص الحساب تُخزَّن مؤقتاً لتفادي استنزاف حد طلبات Alpaca.
+"""
+import logging
+import time
+from typing import Tuple
+
+import alerts
+import state
+from config import settings
+
+log = logging.getLogger("risk")
+
 
 class RiskEngine:
-    """
-    محرك إدارة المخاطر المتقدم وزر الإيقاف الآلي (Multi-Level Kill Switch)
-    """
-    def __init__(self):
-        self.api_key = os.getenv("ALPACA_API_KEY", "").strip()
-        self.secret_key = os.getenv("ALPACA_SECRET_KEY", "").strip()
-        self.client = TradingClient(self.api_key, self.secret_key, paper=False)
-        
-        # 1. إعدادات الحدود الصارمة للمخاطرة
-        self.max_spread_pct = 0.50          # حد أقصى للسبريد 0.5%
-        self.max_daily_loss_pct = 0.02      # حد أقصى للخسارة اليومية 2.0% من رأس المال
-        self.risk_per_trade_usd = 2.00      # أقصى مخاطرة مسموحة بالدولار للصفقة الواحدة
-        
-        # حالة زر الإيقاف الطارئ
-        self.kill_switch_active = False
+    def __init__(self, broker_trading):
+        self.client = broker_trading
+        self.kill_switch = False
+        self._acct = None
+        self._acct_ts = 0.0
 
-    def check_daily_loss_limit(self) -> bool:
-        """
-        التحقق من عدم تجاوز حد الخسارة اليومي الكلي (Daily Loss Limit)
-        """
-        try:
-            account = self.client.get_account()
-            equity = float(account.equity)
-            last_equity = float(account.last_equity)
-            
-            # حساب التغير اليومي في القيمة الكلية للحساب
-            daily_change_pct = (equity - last_equity) / last_equity
-            
-            if daily_change_pct <= -self.max_daily_loss_pct:
-                self.kill_switch_active = True
-                print(f"🚨 [KILL SWITCH] تم تفعيل زر الإيقاف الطارئ! الخسارة اليومية ({daily_change_pct*100:.2f}%) تجاوزت الحد المسموح (-{self.max_daily_loss_pct*100:.1f}%)")
-                return False
-                
+    def account(self, max_age: float = 20.0):
+        if self._acct is None or time.time() - self._acct_ts > max_age:
+            self._acct = self.client.get_account()
+            self._acct_ts = time.time()
+        return self._acct
+
+    def check_daily_loss(self) -> bool:
+        a = self.account()
+        equity, last = float(a.equity), float(a.last_equity)
+        if last <= 0:
             return True
-        except Exception as e:
-            print(f"❌ خطأ أثناء فحص حد الخسارة اليومي: {e}")
-            return False
+        change = (equity - last) / last * 100
+        if change <= -settings.max_daily_loss_pct and not self.kill_switch:
+            self.kill_switch = True
+            log.error("KILL SWITCH: daily change %.2f%%", change)
+            # Emergency action must not depend on Telegram or cancel_orders succeeding.
+            try:
+                self.client.cancel_orders()
+            except Exception as e:
+                log.error("cancel_orders failed: %s", e)
+            try:
+                self.client.close_all_positions(cancel_orders=True)
+            except Exception as e:
+                log.error("close_all failed: %s", e)
+            try:
+                alerts.system(f"تفعيل الإيقاف الطارئ: الخسارة اليومية {change:.2f}%. طُلب إغلاق كل المراكز؛ راجع حالة الأوامر في Alpaca.")
+            except Exception as e:
+                log.error("kill switch notification failed: %s", e)
+        return not self.kill_switch
 
-    def validate_spread(self, bid: float, ask: float) -> bool:
-        """
-        فحص الفارق بين العرض والطلب لتجنب التكاليف الخفية
-        """
-        if bid <= 0 or ask <= 0:
+    def check_pdt(self) -> bool:
+        a = self.account()
+        if float(a.equity) >= 25000:
+            return True
+        # حساب نقدي (multiplier=1) لا يخضع لـ PDT
+        if str(getattr(a, "multiplier", "1")) == "1":
+            return True
+        if getattr(a, "pattern_day_trader", False):
             return False
-            
-        spread_pct = ((ask - bid) / bid) * 100
-        if spread_pct > self.max_spread_pct:
-            print(f"⚠️ [رفض الصفقة] السبريد مرتفع جداً ({spread_pct:.2f}% > {self.max_spread_pct}%)")
-            return False
-            
-        return True
+        return int(getattr(a, "daytrade_count", 0) or 0) < 3
 
-    def calculate_position_size(self, symbol: str, current_price: float, atr_value: float) -> int:
-        """
-        حساب حجم المركز تلقائياً بناءً على تذبذب السهم (ATR) والمخاطرة المحددة بالدولار
-        """
+    def allow_entry(self) -> Tuple[bool, str]:
+        if self.kill_switch:
+            return False, "الإيقاف الطارئ مفعّل"
         try:
-            # استخدام مسافة وقف الخسارة بناءً على 1.5 * ATR
-            stop_distance = max(atr_value * 1.5, current_price * 0.015) # حد أدنى 1.5% للمسافة
-            
-            # الكمية = أقصى مخاطرة بالدولار / مسافة الوقف بالسهم
-            qty = int(self.risk_per_trade_usd / stop_distance)
-            
-            # التأكد من عدم تجاوز الحد الأقصى لميزانية الصفقة ($50.00)
-            max_qty_by_budget = int(50.0 / current_price)
-            final_qty = min(qty, max_qty_by_budget)
-            
-            return max(1, final_qty)
+            if not self.check_daily_loss():
+                return False, "تجاوز حد الخسارة اليومية"
+            if not self.check_pdt():
+                return False, "قاعدة PDT: لا مزيد من الصفقات اليومية"
+            if bool(getattr(self.account(), "trading_blocked", False)):
+                return False, "الحساب محظور من التداول"
         except Exception as e:
-            print(f"❌ خطأ حساب حجم المركز لـ {symbol}: {e}")
-            return 1
-
-    def is_trade_allowed(self, symbol: str, bid: float, ask: float) -> bool:
-        """
-        فحص كلي شامل قبل الإذن بإرسال أي أمر شراء
-        """
-        if self.kill_switch_active:
-            print(f"🛑 [مرفوض] النظام في حالة تجميد طارئ (Kill Switch Active).")
-            return False
-
-        if not self.check_daily_loss_limit():
-            return False
-
-        if not self.validate_spread(bid, ask):
-            return False
-
-        return True
-
-risk_engine = RiskEngine()
+            # عند الشك لا نشتري
+            return False, f"تعذر فحص الحساب: {e}"
+        if state.buys_today() >= settings.max_trades_per_day:
+            return False, "تم بلوغ الحد اليومي للصفقات"
+        return True, "ok"

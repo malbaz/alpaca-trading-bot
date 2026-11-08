@@ -1,38 +1,77 @@
-import os
+"""
+نقطة التشغيل الوحيدة. عملية واحدة تحتوي:
+  - المحرك (مسح + إدارة خروج) في Thread
+  - بث تحديثات الأوامر من Alpaca (trade_updates) في Thread
+  - خادم Webhook (waitress) في الـ Thread الرئيسي
+كلها تتشارك نفس الحالة ونفس محرك المخاطر — لا تكرار أوامر.
+"""
+import logging
 import sys
-import multiprocessing
+import threading
 import time
-from webhook_server import app
-from data_stream import start_stream
-from screener import run_screener
 
-def run_stream_process():
-    try:
-        print("⚡ [Process] جاري تشغيل بث بيانات IEX المباشرة...", flush=True)
-        start_stream()
-    except Exception as e:
-        print(f"❌ خطأ في عملية البث: {e}", file=sys.stderr, flush=True)
+from config import settings, validate_settings
 
-def run_screener_loop():
-    """تشغيل ماسح الأسهم بشكل دوري كل 5 دقائق"""
-    print("🔍 [Screener] جاري إطلاق ماسح الأسهم التلقائي...", flush=True)
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("bot.log", encoding="utf-8")],
+    )
+
+
+def run_trade_stream(orders):
+    from alpaca.trading.stream import TradingStream
+    log = logging.getLogger("stream")
     while True:
         try:
-            run_screener()
+            stream = TradingStream(settings.api_key, settings.secret_key, paper=settings.paper)
+            stream.subscribe_trade_updates(orders.on_trade_update)
+            log.info("trade_updates stream connected")
+            stream.run()
         except Exception as e:
-            print(f"❌ خطأ أثناء تنفيذ الماسح: {e}", file=sys.stderr, flush=True)
-        time.sleep(300) # الانتظار 5 دقائق بين كل عملية مسح
+            log.error("trade stream dropped: %s", e)
+        time.sleep(5)
+
+
+def main():
+    setup_logging()
+    log = logging.getLogger("main")
+    problems = validate_settings()
+    if problems:
+        for p in problems:
+            log.error(p)
+        sys.exit(1)
+
+    import broker, state
+    from risk_engine import RiskEngine
+    from order_manager import OrderManager
+    from engine import Engine
+    from webhook_server import create_app
+
+    state.init()
+    acct = broker.trading.get_account()  # يفشل فوراً إذا كانت المفاتيح لا تطابق البيئة
+    log.info("connected | paper=%s | equity=%s | buying_power=%s | PDT=%s | daytrades=%s",
+             settings.paper, acct.equity, acct.buying_power, acct.pattern_day_trader, acct.daytrade_count)
+
+    risk = RiskEngine(broker.trading)
+    orders = OrderManager(broker.trading, risk)
+    orders.reconcile()
+
+    threading.Thread(target=run_trade_stream, args=(orders,), daemon=True, name="stream").start()
+    threading.Thread(target=Engine(orders).run_forever, daemon=True, name="engine").start()
+
+    app = create_app(orders)
+    if settings.webhook_passphrase:
+        from waitress import serve
+        log.info("webhook on port %s", settings.port)
+        serve(app, host="0.0.0.0", port=settings.port)
+    else:
+        log.warning("WEBHOOK_PASSPHRASE غير محدد — خادم Webhook معطّل")
+        while True:
+            time.sleep(3600)
+
 
 if __name__ == "__main__":
-    # 1. إطلاق عملية بث الأسعار
-    stream_process = multiprocessing.Process(target=run_stream_process, daemon=True)
-    stream_process.start()
-
-    # 2. إطلاق عملية مسح الأسهم المباشرة
-    screener_process = multiprocessing.Process(target=run_screener_loop, daemon=True)
-    screener_process.start()
-
-    # 3. تشغيل سيرفر الـ Webhook
-    port = int(os.getenv("PORT", 5000))
-    print(f"🚀 [Server] جاري تشغيل Webhook Server على المنفذ {port}...", flush=True)
-    app.run(host="0.0.0.0", port=port)
+    main()
