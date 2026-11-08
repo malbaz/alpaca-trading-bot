@@ -129,8 +129,8 @@ class Settings:
     symbol_cooldown_min: int = field(default_factory=lambda: _env_int("SYMBOL_COOLDOWN_MIN", 60))
 
     # === الخروج ===
-    take_profit_pct: float = field(default_factory=lambda: _env_float("TAKE_PROFIT_PCT", 15.0))
-    stop_loss_pct: float = field(default_factory=lambda: _env_float("STOP_LOSS_PCT", 2.5))
+    take_profit_pct: float = field(default_factory=lambda: _env_float("TAKE_PROFIT_PCT", 12.0))
+    stop_loss_pct: float = field(default_factory=lambda: _env_float("STOP_LOSS_PCT", 10.0))
     # أوامر الشراء المعلّقة التي لم تُنفَّذ تُلغى بعد هذه المدة (ثوانٍ)
     entry_timeout_sec: int = field(default_factory=lambda: _env_int("ENTRY_TIMEOUT_SEC", 90))
 
