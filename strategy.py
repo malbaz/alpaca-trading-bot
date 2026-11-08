@@ -6,7 +6,7 @@ from typing import Optional, Sequence
 
 from config import Settings
 
-MIN_STOP_PCT = 3.0
+MIN_STOP_PCT = 10.0
 MIN_REWARD_RISK = 2.0
 # هامش فوق سعر الدخول عند رفع الوقف للتعادل (يغطي الرسوم والانزلاق)
 BREAKEVEN_BUFFER = 1.002
@@ -66,7 +66,7 @@ def evaluate(symbol: str, closes: Sequence[float], volumes: Sequence[int],
 
 
 def exit_levels(entry: float, s: Settings):
-    """Return (target, stop). Round outward to preserve >=3% stop and >=2R.
+    """Return (target, stop). Round outward to preserve >=10% stop and >=2R.
 
     Existing callers remain compatible. These are planned price levels, not
     a guarantee on realized losses: gaps, slippage and fees can exceed them.
