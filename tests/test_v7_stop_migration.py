@@ -77,10 +77,11 @@ class MigrationTests(unittest.TestCase):
         self.assertFalse(self.manager.sync_existing_stops())
         self.assertEqual(self.state.get('CLNE')['stop'], 1.82)
 
-    def test_missing_bracket_leg_does_not_claim_success(self):
+    def test_missing_bracket_leg_uses_bot_stop_and_does_not_freeze(self):
         self.state.upsert('CLNE', bracket=1)
-        self.assertFalse(self.manager.sync_existing_stops())
-        self.assertEqual(self.state.get('CLNE')['stop'], 1.82)
+        self.assertTrue(self.manager.sync_existing_stops())
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.state.get('CLNE')['stop'], 1.72)
 
     def test_broker_profit_stop_is_not_lowered(self):
         self.orders = [NS(id='profit-stop', side='sell', stop_price='2.10', legs=[])]
