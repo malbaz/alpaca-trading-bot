@@ -13,7 +13,7 @@
 """
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import alerts
@@ -57,6 +57,13 @@ class Engine:
             if not snap or not snap.latest_quote:
                 continue
             q = snap.latest_quote
+            if phase == "EXTENDED":
+                stamp = getattr(q, "timestamp", None)
+                if not isinstance(stamp, datetime) or stamp.tzinfo is None:
+                    continue
+                age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                if age < -5 or age > 60:
+                    continue  # Never trade on a previous-session quote.
             bid = float(q.bid_price or 0)
             ask = float(q.ask_price or 0)
             if bid <= 0 or ask <= 0:
@@ -159,16 +166,20 @@ class Engine:
                 raise RuntimeError("تعذر تحديث وقف الصفقات القديمة؛ إعادة المحاولة دون إلغاء الأوامر")
             self._stops_synced = True
         phase = broker.market_phase()
-        if phase == "CLOSED":
-            return phase
+        sell_phase = broker.sell_market_phase()
+        if phase == "CLOSED" and sell_phase == "CLOSED":
+            return "CLOSED"
         self.orders.reconcile()
         self.orders.cancel_stale_entries()
-        self.refresh_universe()
+        if phase != "CLOSED":
+            self.refresh_universe()
         symbols = list({*self.universe, *[r["symbol"] for r in state.active()]})
         snaps = broker.snapshots(symbols)
-        self.manage_exits(phase, snaps)
-        self.scan(phase, snaps)
-        return phase
+        if sell_phase != "CLOSED":
+            self.manage_exits(sell_phase, snaps)
+        if phase != "CLOSED":
+            self.scan(phase, snaps)  # Original buy phase and filters, unchanged.
+        return sell_phase if phase == "CLOSED" else phase
 
     def run_forever(self):
         alerts.system(f"بدء التشغيل ({'تجريبي' if settings.paper else 'حقيقي'}، بيانات {settings.data_feed.upper()})")
