@@ -31,6 +31,7 @@ class Engine:
         self.running = True
         self.universe = list(settings.watchlist)
         self._movers_at = 0.0
+        self._stops_synced = False
 
     def refresh_universe(self):
         """القائمة الثابتة + الأكثر صعودًا/نشاطًا لحظيًا. عند فشل Alpaca تبقى القائمة الثابتة."""
@@ -152,6 +153,11 @@ class Engine:
                 break
 
     def tick(self):
+        # Before local exits or new entries; also runs when the market is closed.
+        if not self._stops_synced:
+            if not self.orders.sync_existing_stops():
+                raise RuntimeError("تعذر تحديث وقف الصفقات القديمة؛ إعادة المحاولة دون إلغاء الأوامر")
+            self._stops_synced = True
         phase = broker.market_phase()
         if phase == "CLOSED":
             return phase

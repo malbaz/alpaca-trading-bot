@@ -12,6 +12,7 @@
 import logging
 import time
 import uuid
+from decimal import Decimal, ROUND_FLOOR
 from typing import Dict, Any
 
 from alpaca.trading.requests import (
@@ -270,6 +271,76 @@ class OrderManager:
                         self.client.cancel_order_by_id(row["order_id"])
                 except Exception as e:
                     log.warning("cancel stale %s: %s", row["symbol"], e)
+
+    def sync_existing_stops(self):
+        """Migrate existing fixed stops to 10%; never lower profit protection.
+
+        Broker stops are replaced in place, never canceled. Failed or pending
+        replacements retain the saved stop and are retried before local exits.
+        Only already-tracked OPEN long positions are eligible.
+        """
+        complete = True
+        for pos in self.client.get_all_positions():
+            symbol = pos.symbol.upper()
+            row = state.get(symbol)
+            if (not row or row.get("state") != "OPEN" or
+                    row.get("trailing") or row.get("partial_done") or
+                    float(pos.qty) <= 0):
+                continue
+            entry = Decimal(str(pos.avg_entry_price))
+            if not entry.is_finite() or entry <= 0:
+                complete = False
+                continue
+            old_stop = float(row.get("stop") or 0)
+            if old_stop >= float(entry):
+                continue  # Preserve an existing breakeven/profit stop too.
+            tick = Decimal("0.01") if entry >= 1 else Decimal("0.0001")
+            new_stop = float((entry * Decimal("0.90")).quantize(tick, rounding=ROUND_FLOOR))
+            if new_stop <= 0:
+                complete = False
+                continue
+            try:
+                orders = self.client.get_orders(GetOrdersRequest(
+                    status=QueryOrderStatus.OPEN, symbols=[symbol], nested=True))
+                stops = {}
+                stack = list(orders)
+                while stack:
+                    order = stack.pop()
+                    stack.extend(getattr(order, "legs", None) or [])
+                    side = getattr(order, "side", None)
+                    if side == OrderSide.SELL and getattr(order, "stop_price", None) is not None:
+                        stops[str(order.id)] = order
+                if any(float(order.stop_price) >= float(entry) for order in stops.values()):
+                    continue  # Broker profit protection also takes precedence.
+                if (row.get("bracket") or row.get("stop_order_id")) and not stops:
+                    log.error("stop migration %s: expected broker stop missing; saved stop retained", symbol)
+                    complete = False
+                    continue
+                pending = False
+                for order in stops.values():
+                    if abs(float(order.stop_price) - new_stop) < float(tick) / 2:
+                        continue
+                    replaced = self.client.replace_order_by_id(
+                        order.id, ReplaceOrderRequest(stop_price=new_stop))
+                    status = getattr(replaced, "status", None)
+                    if getattr(status, "value", status) == "pending_replace":
+                        pending = True
+                if pending:
+                    complete = False
+                    continue
+                # Re-read: a concurrent trade update may have closed or protected it.
+                current = state.get(symbol)
+                if (not current or current.get("state") != "OPEN" or
+                        current.get("trailing") or current.get("partial_done")):
+                    continue
+                state.upsert(symbol, stop=new_stop)
+                if old_stop != new_stop:
+                    log.info("fixed stop migrated %s: %s -> %s (10%% from entry %s)",
+                             symbol, old_stop, new_stop, entry)
+            except Exception as exc:
+                complete = False
+                log.error("stop migration %s failed; old protection retained: %s", symbol, exc)
+        return complete
 
     def reconcile(self):
         """مطابقة قاعدة البيانات مع المراكز الفعلية في Alpaca (Alpaca هي المرجع)."""
