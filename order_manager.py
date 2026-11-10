@@ -1,197 +1,417 @@
 """
-المحرك الموحد — يحل محل screener.py و trading_bot.py و data_stream.py.
-دورة واحدة كل SCAN_INTERVAL_SEC:
-  1) تحديد مرحلة السوق من ساعة Alpaca
-  2) مطابقة المراكز + إلغاء أوامر الشراء المتأخرة
-  3) إدارة الخروج: وقف ثابت ثم وقف متحرك بعد ربح TRAIL_ACTIVATE_PCT
-  4) البحث عن فرص جديدة بطلبات مجمعة لكل الأسهم
+مدير الأوامر: الدخول والخروج والمطابقة مع Alpaca.
 
-قواعد منع البيع المبكر:
-- فحص الخروج على متوسط السعر (mid) وليس سعر الطلب (bid) الذي يهبط لحظيًا.
-- لا خروج محلي إذا كان السبريد أوسع من MAX_SPREAD_EXIT_PCT (هبوط وهمي).
-- الوقف المتحرك لا ينزل أبدًا: بعد التفعيل أسوأ نتيجة هي التعادل.
+- الجلسة الرسمية: أمر Bracket (شراء + هدف + وقف) محفوظ لدى Alpaca نفسها،
+  فيعمل الوقف حتى لو توقف البوت.
+- الوقف المتحرك: عند ربح TRAIL_ACTIVATE_PCT يُلغى الـ Bracket ويُستبدل
+  بأمر Stop محفوظ لدى Alpaca عند التعادل، ثم يُرفع مع صعود السعر.
+  الأمر محفوظ لدى Alpaca لذا تبقى الحماية حتى لو توقف البوت.
+- التداول الممتد: Alpaca لا تدعم Bracket ولا أوامر Stop، فنستخدم Limit
+  ويراقب المحرك الهدف والوقف كل دورة (معطّل افتراضيًا من الإعدادات).
 """
 import logging
 import time
+import uuid
+from decimal import Decimal, ROUND_FLOOR
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from typing import Dict, Any
+
+from alpaca.trading.requests import (
+    MarketOrderRequest, LimitOrderRequest, StopOrderRequest, TakeProfitRequest, StopLossRequest,
+    GetOrdersRequest, ReplaceOrderRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
 
 import alerts
 import broker
+import signals
 import state
 import strategy
 from config import settings
 
-log = logging.getLogger("engine")
+log = logging.getLogger("orders")
 
 
-class Engine:
-    def __init__(self, orders):
-        self.orders = orders
-        self.running = True
-        self.universe = list(settings.watchlist)
-        self._movers_at = 0.0
-        self._stops_synced = False
+class OrderManager:
+    def __init__(self, broker_trading, risk):
+        self.client = broker_trading
+        self.risk = risk
 
-    def refresh_universe(self):
-        """القائمة الثابتة + الأكثر صعودًا/نشاطًا لحظيًا. عند فشل Alpaca تبقى القائمة الثابتة."""
-        if not settings.scan_movers:
-            self.universe = list(settings.watchlist)
-            return
-        if time.time() - self._movers_at < settings.movers_refresh_sec:
-            return
-        self._movers_at = time.time()
-        gainers, actives = broker.top_movers(settings.movers_top)
-        new = strategy.merge_universe(settings.watchlist, gainers, actives, settings)
-        added = [s for s in new if s not in settings.watchlist]
-        if added:
-            log.info("movers added: %s", ",".join(added))
-        self.universe = new
+    # ---------- الدخول ----------
+    def buy(self, symbol: str, price: float, ask: float, phase: str, source: str = "scanner") -> Dict[str, Any]:
+        symbol = symbol.upper()
+        ok, reason = self.risk.allow_entry()
+        if not ok:
+            return {"status": "rejected", "reason": reason}
+        if phase == "CLOSED":
+            return {"status": "rejected", "reason": "السوق مغلق"}
+        if phase == "EXTENDED" and not settings.trade_extended_hours:
+            return {"status": "rejected", "reason": "التداول الممتد معطل"}
+        if not state.try_reserve(symbol, settings.max_open_positions):
+            return {"status": "rejected", "reason": "السهم محجوز/فترة تهدئة/بلغنا حد المراكز"}
 
-    def manage_exits(self, phase: str, snaps):
-        for row in state.active():
-            if row["state"] != "OPEN":
-                continue
-            symbol = row["symbol"]
-            snap = snaps.get(symbol)
-            if not snap or not snap.latest_quote:
-                continue
-            q = snap.latest_quote
+        try:
+            bp = float(self.risk.account(max_age=5).buying_power)
+            # حد أعلى للسعر: أفضل عرض بيع + هامش بسيط، وليس سعر آخر صفقة
+            limit = round(max(ask, price) * 1.003, 2)
+            qty = strategy.position_qty(limit, bp, settings)
+            if qty <= 0:
+                state.clear(symbol)
+                return {"status": "rejected", "reason": f"الميزانية/المخاطرة لا تسمح (القوة الشرائية ${bp:.2f})"}
+
+            target, stop = strategy.exit_levels(limit, settings)
+            coid = f"bot-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:4]}"
+
+            if phase == "REGULAR":
+                req = LimitOrderRequest(
+                    symbol=symbol, qty=qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+                    limit_price=limit, order_class=OrderClass.BRACKET,
+                    take_profit=TakeProfitRequest(limit_price=target),
+                    stop_loss=StopLossRequest(stop_price=stop),
+                    client_order_id=coid,
+                )
+            else:
+                req = LimitOrderRequest(
+                    symbol=symbol, qty=qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+                    limit_price=limit, extended_hours=True, client_order_id=coid,
+                )
+
+            order = self.client.submit_order(req)
+            state.upsert(symbol, state="PENDING_BUY", qty=qty, target=target, stop=stop,
+                         order_id=str(order.id), client_order_id=coid,
+                         bracket=1 if phase == "REGULAR" else 0,
+                         trailing=0, peak_price=0, stop_order_id=None)
+            log.info("BUY submitted %s qty=%s limit=%s phase=%s src=%s", symbol, qty, limit, phase, source)
+            return {"status": "submitted", "order_id": str(order.id), "qty": qty, "limit": limit}
+        except Exception as e:
+            state.clear(symbol)
+            log.error("buy error %s: %s", symbol, e)
+            return {"status": "error", "reason": str(e)}
+
+    # ---------- الخروج ----------
+    def sell(self, symbol: str, reason: str, ref_price: float = 0.0, phase: str = "REGULAR") -> Dict[str, Any]:
+        symbol = symbol.upper()
+        row = state.get(symbol)
+        if row and row["state"] == "PENDING_SELL":
+            return {"status": "rejected", "reason": "البيع جارٍ بالفعل"}
+        if phase not in ("REGULAR", "EXTENDED"):
+            return {"status": "rejected", "reason": "جلسة البيع مغلقة"}
+        try:
+            limit_price = None
             if phase == "EXTENDED":
-                stamp = getattr(q, "timestamp", None)
+                snap = broker.snapshots([symbol]).get(symbol)
+                quote = getattr(snap, "latest_quote", None)
+                stamp = getattr(quote, "timestamp", None)
                 if not isinstance(stamp, datetime) or stamp.tzinfo is None:
-                    continue
+                    return {"status": "rejected", "reason": "لا يوجد عرض حديث للبيع"}
                 age = (datetime.now(timezone.utc) - stamp).total_seconds()
-                if age < -5 or age > 60:
-                    continue  # Never trade on a previous-session quote.
-            bid = float(q.bid_price or 0)
-            ask = float(q.ask_price or 0)
-            if bid <= 0 or ask <= 0:
-                continue
-            # سبريد واسع = أسعار غير موثوقة؛ لا نبيع على هبوط وهمي
-            if strategy.spread_pct(bid, ask) > settings.max_spread_exit_pct:
-                continue
-            mid = (bid + ask) / 2
-            entry = float(row["entry_price"] or 0)
-            if entry <= 0:
-                continue
+                bid = float(quote.bid_price or 0)
+                ask = float(quote.ask_price or 0)
+                if age < -5 or age > 60 or bid <= 0 or ask < bid:
+                    return {"status": "rejected", "reason": "أسعار البيع قديمة أو غير صالحة"}
+                if strategy.spread_pct(bid, ask) > settings.max_spread_exit_pct:
+                    return {"status": "rejected", "reason": "فرق العرض والطلب واسع؛ الحماية باقية"}
+                # Use the executable bid, not midpoint minus an arbitrary discount.
+                precision = 2 if bid >= 1 else 4
+                limit_price = round(bid, precision)
 
-            # تتبع أعلى سعر وصله السهم منذ الدخول
-            peak = max(float(row.get("peak_price") or 0), mid)
-            if peak != float(row.get("peak_price") or 0):
-                state.upsert(symbol, peak_price=peak)
+            pos = next((p for p in self.client.get_all_positions() if p.symbol == symbol), None)
+            if not pos:
+                state.clear(symbol)
+                return {"status": "rejected", "reason": "لا يوجد مركز"}
+            qty = float(pos.qty)
+            if qty <= 0:
+                return {"status": "rejected", "reason": "لا يوجد مركز شراء قابل للبيع"}
 
-            # 1) الوقف الثابت الأصلي — الحماية الأولى قبل التفعيل
-            if not row.get("trailing") and mid <= float(row.get("stop") or 0):
-                change = (mid - entry) / entry * 100
-                reason = f"وقف خسارة ({change:.2f}%)"
-                log.info("exit %s: %s", symbol, reason)
-                self.orders.sell(symbol, reason, ref_price=mid, phase=phase)
-                continue
+            # Only remove existing protection after quote validation; then wait
+            # for confirmed cancellation and the broker's available share count.
+            open_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+            for order in open_orders:
+                self.client.cancel_order_by_id(order.id)
+            released = False
+            for attempt in range(21):
+                if attempt:
+                    time.sleep(0.5)
+                remaining_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+                current = self.client.get_open_position(symbol)
+                qty = float(current.qty)
+                if qty > 0 and not remaining_orders and float(current.qty_available or 0) >= qty:
+                    released = True
+                    break
+            if not released:
+                return {"status": "rejected", "reason": "انتظار تحرير الأسهم؛ إعادة المحاولة في الدورة التالية"}
 
-            # 2) جني ربح جزئي: بيع نصف الكمية عند PARTIAL_TP_PCT ثم وقف متحرك للباقي
-            gain = (peak - entry) / entry * 100
-            if (not row.get("trailing") and not row.get("partial_done") and phase == "REGULAR"
-                    and strategy.partial_qty(row.get("qty") or 0, settings) > 0
-                    and gain >= settings.partial_tp_pct):
-                self.orders.activate_trailing(symbol, partial=True)
-                continue
+            coid = f"bot-exit-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:4]}"
+            state.upsert(symbol, state="PENDING_SELL", order_id=reason, client_order_id=coid)
+            if phase == "REGULAR":
+                submitted = self.client.close_position(symbol)
+                actual_id = getattr(submitted, "client_order_id", None)
+                if actual_id:
+                    state.upsert(symbol, client_order_id=str(actual_id))
+            else:
+                self.client.submit_order(LimitOrderRequest(
+                    symbol=symbol, qty=qty, side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                    limit_price=limit_price, extended_hours=True, client_order_id=coid,
+                ))
+            log.info("SELL submitted %s qty=%s reason=%s", symbol, qty, reason)
+            state.upsert(symbol, order_id=reason)  # نحفظ السبب لرسالة الإغلاق
+            return {"status": "submitted", "qty": qty}
+        except Exception as e:
+            state.upsert(symbol, state="OPEN")
+            log.error("sell error %s: %s", symbol, e)
+            return {"status": "error", "reason": str(e)}
 
-            # 3) تفعيل الوقف المتحرك عند بلوغ ربح TRAIL_ACTIVATE_PCT (الكمية لا تقبل التقسيم)
-            if not row.get("trailing"):
-                # بعد بيع جزئي بلا وقف ناجح: نضع الوقف فورًا للباقي
-                if row.get("partial_done") or strategy.trailing_stop_level(entry, peak, settings) is not None:
-                    if phase == "REGULAR":
-                        # يستبدل الـ Bracket بأمر Stop محفوظ لدى Alpaca عند التعادل
-                        self.orders.activate_trailing(symbol)
-                    else:
-                        # الممتد: لا أوامر Stop لدى Alpaca — تتبع محلي فقط
-                        state.upsert(symbol, trailing=1)
-                continue
+    # ---------- الوقف المتحرك ----------
+    def activate_trailing(self, symbol: str, partial: bool = False):
+        """يُلغي أرجل الـ Bracket ويضع أمر Stop محفوظًا لدى Alpaca عند التعادل.
 
-            # 4) الوقف المتحرك بعد التفعيل — بلا سقف للربح
-            tstop = strategy.trailing_stop_level(entry, peak, settings, active=True)
-            if tstop is None:
-                continue
-            if mid <= tstop:
-                change = (mid - entry) / entry * 100
-                reason = f"وقف متحرك ({change:+.2f}%)"
-                log.info("exit %s: %s", symbol, reason)
-                self.orders.sell(symbol, reason, ref_price=mid, phase=phase)
-            elif phase == "REGULAR":
-                # رفع أمر الوقف المحفوظ لدى Alpaca مع صعود السعر
-                self.orders.update_trailing(symbol, tstop)
-
-    @staticmethod
-    def entry_window_open(now_et=None) -> bool:
-        """الجلسة الرسمية فقط: لا شراء أول SKIP_OPEN_MIN ولا آخر NO_ENTRY_BEFORE_CLOSE_MIN دقيقة."""
-        now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
-        m = now_et.hour * 60 + now_et.minute
-        start = 9 * 60 + 30 + settings.skip_open_min
-        end = 16 * 60 - settings.no_entry_before_close_min
-        return start <= m < end
-
-    def scan(self, phase: str, snaps):
-        if phase == "REGULAR" and not self.entry_window_open():
+        يُستدعى عندما يبلغ الربح TRAIL_ACTIVATE_PCT. بعدها يرفع المحرك
+        الوقف عبر update_trailing مع صعود السعر، ولا ينزله أبدًا.
+        عند الفشل يبقى الـ Bracket الأصلي كما هو (لا فقدان للحماية).
+        """
+        symbol = symbol.upper()
+        row = state.get(symbol)
+        if not row or row["state"] != "OPEN" or row.get("trailing"):
             return
-        if state.active_count() >= settings.max_open_positions:
-            return
-        candidates = [s for s in self.universe
-                      if state.state_of(s) == "NONE" and not state.in_cooldown(s)]
-        bars = broker.minute_bars(candidates, minutes=15)
-        signals = []
-        for sym in candidates:
-            b = bars.get(sym) or []
-            snap = snaps.get(sym)
-            if not b or not snap or not snap.latest_quote:
-                continue
-            q = snap.latest_quote
-            day_high = float(snap.daily_bar.high) if getattr(snap, "daily_bar", None) else None
-            sig = strategy.evaluate(sym, [x.close for x in b], [int(x.volume) for x in b],
-                                    float(q.bid_price or 0), float(q.ask_price or 0), settings,
-                                    day_high=day_high)
-            if sig:
-                signals.append(sig)
-        # الأقوى زخماً أولاً
-        for sig in sorted(signals, key=lambda x: x.momentum_pct, reverse=True):
-            res = self.orders.buy(sig.symbol, sig.price, sig.ask, phase)
-            log.info("signal %s +%.2f%% vol=%s -> %s", sig.symbol, sig.momentum_pct, sig.volume_10m, res)
-            if state.active_count() >= settings.max_open_positions:
-                break
-
-    def tick(self):
-        # Before local exits or new entries; also runs when the market is closed.
-        if not self._stops_synced:
-            if not self.orders.sync_existing_stops():
-                raise RuntimeError("تعذر تحديث وقف الصفقات القديمة؛ إعادة المحاولة دون إلغاء الأوامر")
-            self._stops_synced = True
-        phase = broker.market_phase()
-        sell_phase = broker.sell_market_phase()
-        if phase == "CLOSED" and sell_phase == "CLOSED":
-            return "CLOSED"
-        self.orders.reconcile()
-        self.orders.cancel_stale_entries()
-        if phase != "CLOSED":
-            self.refresh_universe()
-        symbols = list({*self.universe, *[r["symbol"] for r in state.active()]})
-        snaps = broker.snapshots(symbols)
-        if sell_phase != "CLOSED":
-            self.manage_exits(sell_phase, snaps)
-        if phase != "CLOSED":
-            self.scan(phase, snaps)  # Original buy phase and filters, unchanged.
-        return sell_phase if phase == "CLOSED" else phase
-
-    def run_forever(self):
-        alerts.system(f"بدء التشغيل ({'تجريبي' if settings.paper else 'حقيقي'}، بيانات {settings.data_feed.upper()})")
-        errors = 0
-        while self.running:
+        try:
+            open_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+            for o in open_orders:
+                self.client.cancel_order_by_id(o.id)
+            # انتظر حتى تُحرَّر الأسهم من الأوامر الملغاة (حتى 10 ثوانٍ)
+            entry = float(row["entry_price"])
+            qty = float(row["qty"])
             try:
-                phase = self.tick()
-                errors = 0
-                time.sleep(settings.scan_interval_sec if phase != "CLOSED" else 300)
-            except Exception as e:
-                errors += 1
-                log.exception("tick error: %s", e)
-                if errors in (3, 20):
-                    alerts.system(f"أخطاء متكررة في المحرك: {e}")
-                time.sleep(min(60, 5 * errors))
+                # الكمية الفعلية لدى Alpaca هي المرجع (قد تتغير بعد بيع جزئي)
+                qty = float(self.client.get_open_position(symbol).qty)
+            except Exception:
+                pass
+            released = False
+            for _ in range(20):
+                time.sleep(0.5)
+                still = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+                try:
+                    avail = float(self.client.get_open_position(symbol).qty_available or 0)
+                except Exception:
+                    avail = 0.0
+                if not still and avail >= qty:
+                    released = True
+                    break
+            if not released:
+                log.warning("activate_trailing %s: shares not released yet, retry next cycle", symbol)
+                return
+            breakeven = round(entry * strategy.BREAKEVEN_BUFFER, 2)
+            sold = 0
+            if partial:
+                sold = strategy.partial_qty(qty, settings)
+                if sold > 0:
+                    # بيع جزء الكمية فورًا بسعر السوق لتأمين المكسب
+                    self.client.submit_order(MarketOrderRequest(
+                        symbol=symbol, qty=sold, side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                        client_order_id=f"bot-partial-{symbol}-{int(time.time())}",
+                    ))
+                    state.upsert(symbol, partial_done=1)
+                    log.info("partial take-profit %s sold=%s of %s", symbol, sold, qty)
+            remaining = qty - sold
+            order = self.client.submit_order(StopOrderRequest(
+                symbol=symbol, qty=remaining, side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC, stop_price=breakeven,
+                client_order_id=f"bot-trail-{symbol}-{int(time.time())}",
+            ))
+            state.upsert(symbol, trailing=1, bracket=0, stop=breakeven,
+                         stop_order_id=str(order.id))
+            log.info("trailing activated %s entry=%s stop=%s", symbol, entry, breakeven)
+            if sold:
+                alerts.system(f"💰 {symbol}: جني ربح جزئي — بيع {sold} سهم، والباقي {remaining:g} بوقف متحرك (الوقف عند التعادل {breakeven}$)")
+            else:
+                alerts.system(f"🔒 {symbol}: تفعيل الوقف المتحرك — الوقف عند التعادل {breakeven}$ والربح محمي")
+        except Exception as e:
+            log.error("activate_trailing %s: %s", symbol, e)
+
+    def update_trailing(self, symbol: str, new_stop: float):
+        """يرفع أمر الوقف المتحرك لدى Alpaca. لا يُنزِل الوقف أبدًا."""
+        symbol = symbol.upper()
+        row = state.get(symbol)
+        if not row or not row.get("stop_order_id"):
+            return
+        new_stop = round(new_stop, 2)
+        if new_stop <= float(row.get("stop") or 0) + 0.005:
+            return  # لا تغيير يستحق أو محاولة إنزال
+        try:
+            self.client.replace_order_by_id(
+                row["stop_order_id"], ReplaceOrderRequest(stop_price=new_stop))
+            state.upsert(symbol, stop=new_stop)
+            log.info("trailing stop raised %s -> %s", symbol, new_stop)
+        except Exception as e:
+            log.warning("update_trailing %s: %s", symbol, e)
+
+    # ---------- تحديثات Alpaca اللحظية (trade_updates) ----------
+    async def on_trade_update(self, data):
+        event = data.event if isinstance(data.event, str) else data.event.value
+        o = data.order
+        symbol = o.symbol.upper()
+        side = o.side if isinstance(o.side, str) else o.side.value
+        row = state.get(symbol) or {}
+
+        if event == "fill":
+            px = float(o.filled_avg_price or 0)
+            qty = float(o.filled_qty or 0)
+            if side == "buy":
+                target, stop = strategy.exit_levels(px, settings)
+                if row.get("bracket"):
+                    # أرجل الـ Bracket محسوبة من سعر الحد؛ نعرضها كما هي
+                    target, stop = row.get("target", target), row.get("stop", stop)
+                state.upsert(symbol, state="OPEN", qty=qty, entry_price=px,
+                             target=target, stop=stop, peak_price=px)
+                state.log_trade(symbol, "buy", qty, px, "entry")
+                alerts.entry_filled(symbol, qty, px, target, stop, "رسمية" if row.get("bracket") else "ممتد")
+                # توصية لمجموعة العملاء — معزولة تمامًا: أي خطأ هنا لا يؤثر على التداول
+                try:
+                    signals.send_signal(symbol, px, stop, target)
+                except Exception as sig_err:
+                    log.warning("signals: فشل إرسال التوصية (%s) — التداول مستمر", sig_err)
+            elif str(getattr(o, "client_order_id", "") or "").startswith("bot-partial-"):
+                # بيع جزئي: المركز ما زال مفتوحًا بالكمية الباقية
+                entry = float(row.get("entry_price") or 0)
+                left = max(0.0, float(row.get("qty") or 0) - qty)
+                state.log_trade(symbol, "sell", qty, px, "جني ربح جزئي")
+                state.upsert(symbol, qty=left)
+                pnl = (px - entry) * qty
+                alerts.system(f"💰 {symbol}: تم بيع {qty:g} سهم عند {px}$ (ربح {pnl:+.2f}$) — الباقي {left:g} يركب الموجة")
+            else:
+                reason = row.get("order_id") if row.get("state") == "PENDING_SELL" else "هدف/وقف Alpaca"
+                if row.get("trailing") and row.get("state") != "PENDING_SELL":
+                    reason = "وقف متحرك"
+                state.log_trade(symbol, "sell", qty, px, reason)
+                alerts.exit_filled(symbol, qty, row.get("entry_price", 0), px, reason)
+                state.clear(symbol)
+                state.set_cooldown(symbol, settings.symbol_cooldown_min)
+        elif event == "partial_fill" and side == "buy":
+            state.upsert(symbol, qty=float(o.filled_qty or 0))
+        elif event in ("canceled", "expired", "rejected"):
+            if side == "buy" and row.get("state") == "PENDING_BUY":
+                if float(o.filled_qty or 0) > 0:
+                    state.upsert(symbol, state="OPEN", qty=float(o.filled_qty),
+                                 entry_price=float(o.filled_avg_price or 0))
+                else:
+                    state.clear(symbol)
+            elif side == "sell" and row.get("state") == "PENDING_SELL":
+                if str(getattr(o, "client_order_id", "")) == row.get("client_order_id"):
+                    state.upsert(symbol, state="OPEN")
+            log.info("order %s %s %s", event, side, symbol)
+
+    # ---------- الصيانة الدورية ----------
+    def cancel_stale_entries(self):
+        for row in state.active():
+            if row["state"] == "PENDING_BUY" and time.time() - (row["updated_at"] or 0) > settings.entry_timeout_sec:
+                try:
+                    if row.get("order_id"):
+                        self.client.cancel_order_by_id(row["order_id"])
+                except Exception as e:
+                    log.warning("cancel stale %s: %s", row["symbol"], e)
+
+    def sync_existing_stops(self):
+        """Migrate existing fixed stops to 10%; never lower profit protection.
+
+        Broker stops are replaced in place, never canceled. Failed or pending
+        replacements retain the saved stop and are retried before local exits.
+        Only already-tracked OPEN long positions are eligible.
+        """
+        complete = True
+        for pos in self.client.get_all_positions():
+            symbol = pos.symbol.upper()
+            row = state.get(symbol)
+            if (not row or row.get("state") != "OPEN" or
+                    row.get("trailing") or row.get("partial_done") or
+                    float(pos.qty) <= 0):
+                continue
+            entry = Decimal(str(pos.avg_entry_price))
+            if not entry.is_finite() or entry <= 0:
+                complete = False
+                continue
+            old_stop = float(row.get("stop") or 0)
+            if old_stop >= float(entry):
+                continue  # Preserve an existing breakeven/profit stop too.
+            tick = Decimal("0.01") if entry >= 1 else Decimal("0.0001")
+            new_stop = float((entry * Decimal("0.90")).quantize(tick, rounding=ROUND_FLOOR))
+            if new_stop <= 0:
+                complete = False
+                continue
+            try:
+                orders = self.client.get_orders(GetOrdersRequest(
+                    status=QueryOrderStatus.OPEN, symbols=[symbol], nested=True))
+                stops = {}
+                stack = list(orders)
+                while stack:
+                    order = stack.pop()
+                    stack.extend(getattr(order, "legs", None) or [])
+                    side = getattr(order, "side", None)
+                    if side == OrderSide.SELL and getattr(order, "stop_price", None) is not None:
+                        stops[str(order.id)] = order
+                if any(float(order.stop_price) >= float(entry) for order in stops.values()):
+                    continue  # Broker profit protection also takes precedence.
+                if (row.get("bracket") or row.get("stop_order_id")) and not stops:
+                    # No broker stop exists (e.g. expired bracket leg). Do not freeze the
+                    # bot: save the 10% stop so the bot's own stop check protects it.
+                    log.warning("stop migration %s: no broker stop; bot will guard stop %s itself",
+                                symbol, new_stop)
+                    current = state.get(symbol)
+                    if current and current.get("state") == "OPEN" and not current.get("trailing") \
+                            and not current.get("partial_done"):
+                        state.upsert(symbol, stop=new_stop)
+                    continue
+                pending = False
+                for order in stops.values():
+                    if abs(float(order.stop_price) - new_stop) < float(tick) / 2:
+                        continue
+                    replaced = self.client.replace_order_by_id(
+                        order.id, ReplaceOrderRequest(stop_price=new_stop))
+                    status = getattr(replaced, "status", None)
+                    if getattr(status, "value", status) == "pending_replace":
+                        pending = True
+                if pending:
+                    complete = False
+                    continue
+                # Re-read: a concurrent trade update may have closed or protected it.
+                current = state.get(symbol)
+                if (not current or current.get("state") != "OPEN" or
+                        current.get("trailing") or current.get("partial_done")):
+                    continue
+                state.upsert(symbol, stop=new_stop)
+                if old_stop != new_stop:
+                    log.info("fixed stop migrated %s: %s -> %s (10%% from entry %s)",
+                             symbol, old_stop, new_stop, entry)
+            except Exception as exc:
+                complete = False
+                log.error("stop migration %s failed; old protection retained: %s", symbol, exc)
+        return complete
+
+    def reconcile(self):
+        """مطابقة قاعدة البيانات مع المراكز الفعلية في Alpaca (Alpaca هي المرجع)."""
+        positions = {p.symbol.upper(): p for p in self.client.get_all_positions()}
+        for row in state.active():
+            if row["state"] in ("OPEN", "PENDING_SELL") and row["symbol"] not in positions:
+                state.clear(row["symbol"])
+                if row["state"] == "PENDING_SELL":
+                    state.set_cooldown(row["symbol"], settings.symbol_cooldown_min)
+            elif row["state"] == "PENDING_SELL" and row.get("client_order_id"):
+                # Read back real status before retrying: no duplicate sells.
+                try:
+                    order = self.client.get_order_by_client_id(row["client_order_id"])
+                    status = getattr(order.status, "value", order.status)
+                    state.upsert(row["symbol"], qty=float(positions[row["symbol"]].qty))
+                    if status in ("canceled", "expired", "rejected"):
+                        state.upsert(row["symbol"], state="OPEN")
+                    elif getattr(order, "extended_hours", False) and status in ("new", "accepted", "partially_filled"):
+                        submitted = getattr(order, "submitted_at", None) or getattr(order, "created_at", None)
+                        if submitted and submitted.tzinfo is not None and (datetime.now(timezone.utc) - submitted).total_seconds() > 90:
+                            self.client.cancel_order_by_id(order.id)
+                            # Stay pending until cancellation is confirmed next cycle.
+                except Exception as exc:
+                    log.warning("pending sell reconciliation %s: %s", row["symbol"], exc)
+        for sym, p in positions.items():
+            row = state.get(sym)
+            if not row or row["state"] == "NONE":
+                entry = float(p.avg_entry_price)
+                target, stop = strategy.exit_levels(entry, settings)
+                state.upsert(sym, state="OPEN", qty=float(p.qty), entry_price=entry,
+                             target=target, stop=stop, peak_price=float(p.current_price or entry))
