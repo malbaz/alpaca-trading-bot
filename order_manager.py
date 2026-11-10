@@ -13,6 +13,7 @@ import logging
 import time
 import uuid
 from decimal import Decimal, ROUND_FLOOR
+from datetime import datetime, timezone
 from typing import Dict, Any
 
 from alpaca.trading.requests import (
@@ -22,6 +23,7 @@ from alpaca.trading.requests import (
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
 
 import alerts
+import broker
 import signals
 import state
 import strategy
@@ -92,30 +94,64 @@ class OrderManager:
         row = state.get(symbol)
         if row and row["state"] == "PENDING_SELL":
             return {"status": "rejected", "reason": "البيع جارٍ بالفعل"}
+        if phase not in ("REGULAR", "EXTENDED"):
+            return {"status": "rejected", "reason": "جلسة البيع مغلقة"}
         try:
-            # إلغاء أي أوامر معلقة (أرجل الـ Bracket أو أمر الوقف المتحرك) قبل البيع
-            open_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
-            for o in open_orders:
-                self.client.cancel_order_by_id(o.id)
+            limit_price = None
+            if phase == "EXTENDED":
+                snap = broker.snapshots([symbol]).get(symbol)
+                quote = getattr(snap, "latest_quote", None)
+                stamp = getattr(quote, "timestamp", None)
+                if not isinstance(stamp, datetime) or stamp.tzinfo is None:
+                    return {"status": "rejected", "reason": "لا يوجد عرض حديث للبيع"}
+                age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                bid = float(quote.bid_price or 0)
+                ask = float(quote.ask_price or 0)
+                if age < -5 or age > 60 or bid <= 0 or ask < bid:
+                    return {"status": "rejected", "reason": "أسعار البيع قديمة أو غير صالحة"}
+                if strategy.spread_pct(bid, ask) > settings.max_spread_exit_pct:
+                    return {"status": "rejected", "reason": "فرق العرض والطلب واسع؛ الحماية باقية"}
+                # Use the executable bid, not midpoint minus an arbitrary discount.
+                precision = 2 if bid >= 1 else 4
+                limit_price = round(bid, precision)
 
             pos = next((p for p in self.client.get_all_positions() if p.symbol == symbol), None)
             if not pos:
                 state.clear(symbol)
                 return {"status": "rejected", "reason": "لا يوجد مركز"}
-
             qty = float(pos.qty)
-            state.upsert(symbol, state="PENDING_SELL")
+            if qty <= 0:
+                return {"status": "rejected", "reason": "لا يوجد مركز شراء قابل للبيع"}
+
+            # Only remove existing protection after quote validation; then wait
+            # for confirmed cancellation and the broker's available share count.
+            open_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+            for order in open_orders:
+                self.client.cancel_order_by_id(order.id)
+            released = False
+            for attempt in range(21):
+                if attempt:
+                    time.sleep(0.5)
+                remaining_orders = self.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+                current = self.client.get_open_position(symbol)
+                qty = float(current.qty)
+                if qty > 0 and not remaining_orders and float(current.qty_available or 0) >= qty:
+                    released = True
+                    break
+            if not released:
+                return {"status": "rejected", "reason": "انتظار تحرير الأسهم؛ إعادة المحاولة في الدورة التالية"}
+
+            coid = f"bot-exit-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:4]}"
+            state.upsert(symbol, state="PENDING_SELL", order_id=reason, client_order_id=coid)
             if phase == "REGULAR":
-                # في الجلسة الرسمية: إغلاق فوري بسعر السوق
-                self.client.close_position(symbol)
+                submitted = self.client.close_position(symbol)
+                actual_id = getattr(submitted, "client_order_id", None)
+                if actual_id:
+                    state.upsert(symbol, client_order_id=str(actual_id))
             else:
-                px = ref_price or float(pos.current_price)
-                # في الممتد: Limit بخصم أكبر عند الوقف لضمان التنفيذ
-                discount = 0.985 if "وقف" in reason else 0.997
                 self.client.submit_order(LimitOrderRequest(
                     symbol=symbol, qty=qty, side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
-                    limit_price=round(px * discount, 2), extended_hours=True,
-                    client_order_id=f"bot-exit-{symbol}-{int(time.time())}",
+                    limit_price=limit_price, extended_hours=True, client_order_id=coid,
                 ))
             log.info("SELL submitted %s qty=%s reason=%s", symbol, qty, reason)
             state.upsert(symbol, order_id=reason)  # نحفظ السبب لرسالة الإغلاق
@@ -259,7 +295,8 @@ class OrderManager:
                 else:
                     state.clear(symbol)
             elif side == "sell" and row.get("state") == "PENDING_SELL":
-                state.upsert(symbol, state="OPEN")
+                if str(getattr(o, "client_order_id", "")) == row.get("client_order_id"):
+                    state.upsert(symbol, state="OPEN")
             log.info("order %s %s %s", event, side, symbol)
 
     # ---------- الصيانة الدورية ----------
@@ -352,8 +389,25 @@ class OrderManager:
         """مطابقة قاعدة البيانات مع المراكز الفعلية في Alpaca (Alpaca هي المرجع)."""
         positions = {p.symbol.upper(): p for p in self.client.get_all_positions()}
         for row in state.active():
-            if row["state"] == "OPEN" and row["symbol"] not in positions:
+            if row["state"] in ("OPEN", "PENDING_SELL") and row["symbol"] not in positions:
                 state.clear(row["symbol"])
+                if row["state"] == "PENDING_SELL":
+                    state.set_cooldown(row["symbol"], settings.symbol_cooldown_min)
+            elif row["state"] == "PENDING_SELL" and row.get("client_order_id"):
+                # Read back real status before retrying: no duplicate sells.
+                try:
+                    order = self.client.get_order_by_client_id(row["client_order_id"])
+                    status = getattr(order.status, "value", order.status)
+                    state.upsert(row["symbol"], qty=float(positions[row["symbol"]].qty))
+                    if status in ("canceled", "expired", "rejected"):
+                        state.upsert(row["symbol"], state="OPEN")
+                    elif getattr(order, "extended_hours", False) and status in ("new", "accepted", "partially_filled"):
+                        submitted = getattr(order, "submitted_at", None) or getattr(order, "created_at", None)
+                        if submitted and submitted.tzinfo is not None and (datetime.now(timezone.utc) - submitted).total_seconds() > 90:
+                            self.client.cancel_order_by_id(order.id)
+                            # Stay pending until cancellation is confirmed next cycle.
+                except Exception as exc:
+                    log.warning("pending sell reconciliation %s: %s", row["symbol"], exc)
         for sym, p in positions.items():
             row = state.get(sym)
             if not row or row["state"] == "NONE":
