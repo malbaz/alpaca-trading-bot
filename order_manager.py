@@ -313,8 +313,14 @@ class OrderManager:
                 if any(float(order.stop_price) >= float(entry) for order in stops.values()):
                     continue  # Broker profit protection also takes precedence.
                 if (row.get("bracket") or row.get("stop_order_id")) and not stops:
-                    log.error("stop migration %s: expected broker stop missing; saved stop retained", symbol)
-                    complete = False
+                    # No broker stop exists (e.g. expired bracket leg). Do not freeze the
+                    # bot: save the 10% stop so the bot's own stop check protects it.
+                    log.warning("stop migration %s: no broker stop; bot will guard stop %s itself",
+                                symbol, new_stop)
+                    current = state.get(symbol)
+                    if current and current.get("state") == "OPEN" and not current.get("trailing") \
+                            and not current.get("partial_done"):
+                        state.upsert(symbol, stop=new_stop)
                     continue
                 pending = False
                 for order in stops.values():
