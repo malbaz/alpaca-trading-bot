@@ -113,7 +113,7 @@ class MigrationTests(unittest.TestCase):
         observations = []
         scope = dict(settings=NS(watchlist=[]),
                      state=NS(active=lambda: [self.state.get('CLNE')]),
-                     broker=NS(market_phase=lambda: 'REGULAR', snapshots=lambda symbols: {}))
+                     broker=NS(market_phase=lambda: 'REGULAR', sell_market_phase=lambda: 'REGULAR', snapshots=lambda symbols: {}))
         exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), 'exec'), scope)
         orders = NS(sync_existing_stops=self.manager.sync_existing_stops,
                     reconcile=lambda: None, cancel_stale_entries=lambda: None)
