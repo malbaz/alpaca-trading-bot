@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
+from alpaca.trading.requests import GetCalendarRequest
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockSnapshotRequest, StockBarsRequest
@@ -97,3 +98,38 @@ def market_phase() -> str:
     pre = 4 * 60 <= minutes < 9 * 60 + 30 and hours_to_open < 6
     post = 16 * 60 <= minutes < 20 * 60 and hours_to_open < 18
     return "EXTENDED" if (pre or post) else "CLOSED"
+
+
+# Separate sell sessions from the original buy clock: buy rules stay unchanged.
+_sell_calendar_cache = {}
+
+
+def sell_market_phase() -> str:
+    """Calendar-backed sells only: pre-market, core, after-hours; no overnight."""
+    from zoneinfo import ZoneInfo
+    try:
+        now_et = trading.get_clock().timestamp.astimezone(ZoneInfo("America/New_York"))
+        if now_et.weekday() >= 5:
+            return "CLOSED"
+        day = now_et.date()
+        if day not in _sell_calendar_cache:
+            sessions = trading.get_calendar(GetCalendarRequest(start=day, end=day))
+            _sell_calendar_cache.clear()
+            _sell_calendar_cache[day] = sessions[0] if sessions else None
+        session = _sell_calendar_cache[day]
+        if session is None:
+            return "CLOSED"
+        minutes = now_et.hour * 60 + now_et.minute
+        open_min = session.open.hour * 60 + session.open.minute
+        close_min = session.close.hour * 60 + session.close.minute
+        if open_min <= minutes < close_min:
+            return "REGULAR"
+        if 4 * 60 <= minutes < open_min:
+            return "EXTENDED"
+        # No post-market on NYSE half-days; do not infer a session from next_open.
+        if close_min == 16 * 60 and close_min <= minutes < 20 * 60:
+            return "EXTENDED"
+        return "CLOSED"
+    except Exception as exc:
+        log.warning("sell session unavailable; no new sell submitted: %s", exc)
+        return "CLOSED"
