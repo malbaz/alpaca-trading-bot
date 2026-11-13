@@ -130,7 +130,7 @@ class Settings:
 
     # === الخروج ===
     take_profit_pct: float = field(default_factory=lambda: _env_float("TAKE_PROFIT_PCT", 12.0))
-    stop_loss_pct: float = field(default_factory=lambda: _env_float("STOP_LOSS_PCT", 10.0))
+    stop_loss_pct: float = field(default_factory=lambda: _env_float("STOP_LOSS_PCT", 25.0))
     # أوامر الشراء المعلّقة التي لم تُنفَّذ تُلغى بعد هذه المدة (ثوانٍ)
     entry_timeout_sec: int = field(default_factory=lambda: _env_int("ENTRY_TIMEOUT_SEC", 90))
 
