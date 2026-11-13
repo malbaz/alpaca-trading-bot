@@ -310,7 +310,7 @@ class OrderManager:
                     log.warning("cancel stale %s: %s", row["symbol"], e)
 
     def sync_existing_stops(self):
-        """Migrate existing fixed stops to 10%; never lower profit protection.
+        """Migrate existing fixed stops to the configured stop percent; never lower profit protection.
 
         Broker stops are replaced in place, never canceled. Failed or pending
         replacements retain the saved stop and are retried before local exits.
@@ -332,7 +332,11 @@ class OrderManager:
             if old_stop >= float(entry):
                 continue  # Preserve an existing breakeven/profit stop too.
             tick = Decimal("0.01") if entry >= 1 else Decimal("0.0001")
-            new_stop = float((entry * Decimal("0.90")).quantize(tick, rounding=ROUND_FLOOR))
+            stop_factor = Decimal("1") - Decimal(str(settings.stop_loss_pct)) / Decimal("100")
+            if stop_factor <= 0:
+                complete = False
+                continue
+            new_stop = float((entry * stop_factor).quantize(tick, rounding=ROUND_FLOOR))
             if new_stop <= 0:
                 complete = False
                 continue
@@ -351,7 +355,7 @@ class OrderManager:
                     continue  # Broker profit protection also takes precedence.
                 if (row.get("bracket") or row.get("stop_order_id")) and not stops:
                     # No broker stop exists (e.g. expired bracket leg). Do not freeze the
-                    # bot: save the 10% stop so the bot's own stop check protects it.
+                    # bot: save the configured stop so the bot's own stop check protects it.
                     log.warning("stop migration %s: no broker stop; bot will guard stop %s itself",
                                 symbol, new_stop)
                     current = state.get(symbol)
@@ -378,8 +382,8 @@ class OrderManager:
                     continue
                 state.upsert(symbol, stop=new_stop)
                 if old_stop != new_stop:
-                    log.info("fixed stop migrated %s: %s -> %s (10%% from entry %s)",
-                             symbol, old_stop, new_stop, entry)
+                    log.info("fixed stop migrated %s: %s -> %s (%s%% from entry %s)",
+                             symbol, old_stop, new_stop, settings.stop_loss_pct, entry)
             except Exception as exc:
                 complete = False
                 log.error("stop migration %s failed; old protection retained: %s", symbol, exc)
